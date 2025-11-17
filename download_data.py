@@ -6,11 +6,11 @@ import os
 # Ticker saham. 
 # PENTING: Untuk saham Indonesia, tambahkan suffix ".JK"
 # Contoh: "BBCA.JK", "TLKM.JK", "GOTO.JK"
-TICKER = "ELSA.JK"
+TICKER = "NRCA.JK"
 
 # Tanggal mulai dan akhir (YYYY-MM-DD)
 START_DATE = "2022-11-15"
-END_DATE = "2025-11-16" # Biasanya yfinance mengambil data HINGGA (tapi tidak termasuk) tanggal ini.
+END_DATE = "2025-11-18" # Biasanya yfinance mengambil data HINGGA (tapi tidak termasuk) tanggal ini.
 
 # Nama file untuk output CSV
 NAMA_FILE_OUTPUT = f"stockdata/{TICKER}_history.csv"
