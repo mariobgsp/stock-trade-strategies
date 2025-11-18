@@ -1,527 +1,344 @@
 import pandas as pd
+import numpy as np
+
+# --- FUNGSI BANTUAN (HELPER) ---
+def _get_scalar(row, col_name, default=0):
+    """
+    Fungsi pengaman: Mengambil nilai tunggal dari baris data.
+    """
+    try:
+        val = row.get(col_name, default)
+        if isinstance(val, pd.Series):
+            val = val.iloc[0] 
+        if pd.isna(val): 
+            return default
+        return val
+    except:
+        return default
 
 def scan_for_signals(df, clustered_supports, clustered_resistances):
     """
-    Memindai seluruh riwayat data (timeframe) untuk menemukan 
-    dan melabeli sinyal trading spesifik (TERMASUK Reversal & Buy The Dip).
-    
-    [VERSI DIPERBARUI]: BTD dan STR sekarang membutuhkan konfirmasi osilator.
+    Memindai sinyal historis (FIX: Menampilkan daftar sinyal + % RETURN).
     """
     print("\n--- (DETECTOR) Memulai Pemindaian Sinyal Historis ---")
     
-    signals_found = []
-    support_levels = clustered_supports['Level'].values
-    resistance_levels = clustered_resistances['Level'].values
-    proximity = 0.02 # Toleransi 2%
+    # 1. Bersihkan Data
+    df_clean = df.dropna(subset=['close']).copy()
+    total_bars = len(df_clean)
+    look_ahead_days = 10 # Periode lookahead untuk perhitungan return
     
-    if len(df) < 201:
-        print("Data tidak cukup untuk pemindaian MA 200.")
+    # 2. CEK DATA
+    if total_bars < 200:
+        print(f"  [INFO] Data history terlalu pendek ({total_bars} bar).")
         return pd.DataFrame() 
 
-    for i in range(200, len(df)):
-        bar = df.iloc[i]
-        prev_bar = df.iloc[i-1]
-        
-        # --- KUMPULKAN STATUS INDIKATOR (BULLISH) ---
-        rsi_val = bar['rsi_14']
-        rsi_bullish_cross = prev_bar['rsi_14'] < 30 and rsi_val > 30
-        
-        macd_val = bar['macd_12_26_9']
-        macds_val = bar['macds_12_26_9']
-        macd_bullish_cross = prev_bar['macd_12_26_9'] < prev_bar['macds_12_26_9'] and macd_val > macds_val
+    print(f"  [INFO] Memindai {total_bars} bar data historis...")
 
-        stochk_val = bar['stochk_10_3_3']
-        stochd_val = bar['stochd_10_3_3']
-        stoch_bullish_cross = prev_bar['stochk_10_3_3'] < prev_bar['stochd_10_3_3'] and stochk_val > stochd_val
-        stoch_leaving_oversold = stoch_bullish_cross and prev_bar['stochk_10_3_3'] < 30 
+    signals_found = []
+    support_levels = clustered_supports['Level'].values
+    proximity = 0.02
+
+    # Loop scan (Mulai dari bar ke-200)
+    for i in range(200, total_bars):
+        bar = df_clean.iloc[i]
+        prev_bar = df_clean.iloc[i-1]
         
-        is_oscillator_buy_confirm = stoch_leaving_oversold or rsi_bullish_cross
+        # Ambil Data
+        ma50 = _get_scalar(bar, 'sma_50')
+        ma200 = _get_scalar(bar, 'sma_200')
+        ma50_prev = _get_scalar(prev_bar, 'sma_50')
+        ma200_prev = _get_scalar(prev_bar, 'sma_200')
+        close_val = _get_scalar(bar, 'close')
+        open_val = _get_scalar(bar, 'open')
+        low_val = _get_scalar(bar, 'low')
         
-        # --- KUMPULKAN STATUS INDIKATOR (BEARISH) ---
-        rsi_bearish_cross = prev_bar['rsi_14'] > 70 and rsi_val < 70
-        stoch_bearish_cross = prev_bar['stochk_10_3_3'] > prev_bar['stochd_10_3_3'] and stochk_val < stochd_val
-        stoch_leaving_overbought = stoch_bearish_cross and prev_bar['stochk_10_3_3'] > 70
+        # --- PERHITUNGAN RETURN (Dilakukan per bar, diakses jika sinyal ditemukan) ---
+        entry_price = close_val
+        future_idx = min(i + look_ahead_days, total_bars - 1)
+        future_price = _get_scalar(df_clean.iloc[future_idx], 'close')
+        pct_return = (future_price - entry_price) / entry_price if entry_price > 0 else 0
         
-        is_oscillator_sell_confirm = stoch_leaving_overbought or rsi_bearish_cross
-        
-        # --- SISA INDIKATOR ---
-        volume_breakout = bar['volume'] > (bar['volume_ma20'] * 1.5)
-        ma50_val = bar['sma_50']
-        ma200_val = bar['sma_200']
-        ma50_prev = prev_bar['sma_50']
-        ma200_prev = prev_bar['sma_200']
-        
-        # Filter Whipsaw (Fake Cross)
-        is_golden_cross = (ma50_prev < ma200_prev and ma50_val > ma200_val) and (bar['close'] > ma50_val) 
-        is_death_cross = (ma50_prev > ma200_prev and ma50_val < ma200_val) and (bar['close'] < ma50_val)
-        
-        # FILTER TREN UTAMA
-        is_main_uptrend = bar['close'] > ma200_val
-        
-        # Pola Reversal Candlestick
-        is_bearish_engulfing = (prev_bar['close'] > prev_bar['open']) and \
-                               (bar['close'] < bar['open']) and \
-                               (bar['close'] < prev_bar['open']) and \
-                               (bar['open'] > prev_bar['close'])
-        is_bullish_engulfing = (prev_bar['close'] < prev_bar['open']) and \
-                               (bar['close'] > bar['open']) and \
-                               (bar['close'] > prev_bar['open']) and \
-                               (bar['open'] < prev_bar['close'])
-        
-        # --- LOGIKA PENCARIAN & PELABELAN "SPOT" ---
-        
-        # 1. SINYAL TREN (Golden/Death Cross)
-        if is_golden_cross:
+        # 1. Sinyal Golden Cross
+        if (ma50_prev < ma200_prev) and (ma50 > ma200) and (close_val > ma50):
             signals_found.append({
-                "Tanggal": bar.name, "Sinyal (Label)": "TREND - GOLDEN CROSS",
-                "Harga": bar['close'], 
-                "Detail": "MA 50 cross MA 200 (Dikonfirmasi harga > MA 50)"
+                "Tanggal": bar.name, 
+                "Sinyal (Label)": "TREND - GOLDEN CROSS", 
+                "Harga": close_val, 
+                "Return 10D (%)": f"{pct_return:+.2%}", # ADDED RETURN
+                "Detail": "MA 50 Cross MA 200"
             })
-            continue 
+
+        # 2. Sinyal Buy The Dip
+        is_uptrend = close_val > ma200
+        if is_uptrend:
+            if (low_val < ma50) and (close_val > ma50) and (close_val > open_val):
+                 signals_found.append({
+                    "Tanggal": bar.name, 
+                    "Sinyal (Label)": "BUY THE DIP (MA 50)", 
+                    "Harga": close_val, 
+                    "Return 10D (%)": f"{pct_return:+.2%}", # ADDED RETURN
+                    "Detail": "Pantul MA 50"
+                })
+                 
+        # 3. Sinyal Reversal Engulfing
+        is_bull_engulf = (close_val > open_val) and \
+                         (_get_scalar(prev_bar, 'close') < _get_scalar(prev_bar, 'open')) and \
+                         (close_val > _get_scalar(prev_bar, 'open')) and \
+                         (open_val < _get_scalar(prev_bar, 'close'))
         
-        if is_death_cross:
-            signals_found.append({
-                "Tanggal": bar.name, "Sinyal (Label)": "TREND - DEATH CROSS",
-                "Harga": bar['close'], 
-                "Detail": "MA 50 cross MA 200 (Dikonfirmasi harga < MA 50)"
-            })
-            continue 
-            
-        # 2. SINYAL REVERSAL (Engulfing)
-        if is_bullish_engulfing:
-            for sup_level in support_levels:
-                is_near_support = abs(bar['low'] - sup_level) / sup_level < proximity
-                if is_near_support:
-                    signals_found.append({
-                        "Tanggal": bar.name, "Sinyal (Label)": "REVERSAL - BULLISH ENGULFING",
-                        "Harga": bar['close'], "Detail": f"Pola Engulfing Bullish di S {sup_level:.0f}"
+        if is_bull_engulf:
+             for s in clustered_supports['Level'].values:
+                 if abs(low_val - s) / s < proximity:
+                     signals_found.append({
+                        "Tanggal": bar.name, 
+                        "Sinyal (Label)": "REVERSAL - BULLISH ENGULFING", 
+                        "Harga": close_val, 
+                        "Return 10D (%)": f"{pct_return:+.2%}", # ADDED RETURN
+                        "Detail": f"Support {s:.0f}"
                     })
-                    break 
-            if signals_found and signals_found[-1]["Tanggal"] == bar.name: continue 
-            
-        if is_bearish_engulfing:
-            for res_level in resistance_levels:
-                is_near_resistance = abs(bar['high'] - res_level) / res_level < proximity
-                if is_near_resistance:
-                    signals_found.append({
-                        "Tanggal": bar.name, "Sinyal (Label)": "REVERSAL - BEARISH ENGULFING",
-                        "Harga": bar['close'], "Detail": f"Pola Engulfing Bearish di R {res_level:.0f}"
-                    })
-                    break
-            if signals_found and signals_found[-1]["Tanggal"] == bar.name: continue
+                     break
 
-        
-        # 3. SINYAL FILTER TREN
-        if is_main_uptrend:
-            
-            # SINYAL "BUY THE DIP" (Pantulan MA 50)
-            is_dip_buy = (bar['low'] < ma50_val) and (bar['close'] > ma50_val) and (bar['close'] > bar['open'])
-            if is_dip_buy and is_oscillator_buy_confirm: # <-- Ditambah konfirmasi
-                signals_found.append({
-                    "Tanggal": bar.name, "Sinyal (Label)": "BUY THE DIP (MA 50)",
-                    "Harga": bar['close'], "Detail": f"Pantul MA 50 (Dikonfirmasi Stoch/RSI Cross)"
-                })
-                continue
-                
-            # SINYAL "ALL VALID CROSSOVER" (BUY)
-            if rsi_bullish_cross and macd_bullish_cross and stoch_leaving_oversold and volume_breakout:
-                signals_found.append({
-                    "Tanggal": bar.name, "Sinyal (Label)": "BUY - ALL VALID CROSSOVER",
-                    "Harga": bar['close'], "Detail": "RSI keluar OS, MACD Cross, Stoch Cross, Vol Spike"
-                })
-                continue 
-            
-            # SINYAL "BREAKOUT RESISTANCE" (BUY)
-            for res_level in resistance_levels:
-                is_breakout = prev_bar['close'] < res_level and bar['close'] > res_level
-                
-                is_not_rsi_overbought = rsi_val < 70 
-                is_not_stoch_overbought = stochk_val < 80
-
-                if is_breakout and volume_breakout and is_not_rsi_overbought and is_not_stoch_overbought:
-                    signals_found.append({
-                        "Tanggal": bar.name, "Sinyal (Label)": "BREAKOUT - RESISTANCE",
-                        "Harga": bar['close'], 
-                        "Detail": f"Tembus Res {res_level:.0f} (Vol Kuat, RSI < 70, Stoch < 80)"
-                    })
-                    break
-            
-            # SINYAL "BOUNCE / RbS FLIP" (BUY)
-            for sup_level in support_levels:
-                is_near_support = abs(bar['low'] - sup_level) / sup_level < proximity
-                is_bounce = bar['close'] > bar['open'] 
-                is_confirmed_buy = rsi_bullish_cross or stoch_leaving_oversold
-                
-                if is_near_support and is_bounce and is_confirmed_buy:
-                    is_rbs_flip = (abs(clustered_resistances['Level'] - sup_level) / sup_level < proximity).any()
-                    signal_label = "BOUNCE - RbS FLIP" if is_rbs_flip else "BOUNCE - SUPPORT"
-                    detail = f"Pantulan dari Zona Flip {sup_level:.0f}" if is_rbs_flip else f"Pantulan dari Sup {sup_level:.0f}"
-                    
-                    signals_found.append({
-                        "Tanggal": bar.name, "Sinyal (Label)": signal_label, "Harga": bar['close'], "Detail": detail
-                    })
-                    break 
-
-        else: # (if not is_main_uptrend) -> Tren Turun
-            
-            # SINYAL "SELL THE RALLY" (BARU)
-            is_rally_sell = (bar['high'] > ma50_val) and (bar['close'] < ma50_val) and (bar['close'] < bar['open'])
-            if is_rally_sell and is_oscillator_sell_confirm: # <-- Ditambah konfirmasi
-                signals_found.append({
-                    "Tanggal": bar.name, "Sinyal (Label)": "SELL THE RALLY (MA 50)",
-                    "Harga": bar['close'], "Detail": f"Tolak MA 50 (Dikonfirmasi Stoch/RSI Cross)"
-                })
-                continue
-
-            # SINYAL "REJECTION / SbR FLIP" (SELL)
-            for res_level in resistance_levels:
-                is_near_resistance = abs(bar['high'] - res_level) / res_level < proximity
-                is_rejection = bar['close'] < bar['open'] 
-                is_confirmed_sell = rsi_bearish_cross or stoch_leaving_overbought
-                
-                if is_near_resistance and is_rejection and is_confirmed_sell:
-                    is_sbr_flip = (abs(clustered_supports['Level'] - res_level) / res_level < proximity).any()
-                    signal_label = "REJECTION - SbR FLIP" if is_sbr_flip else "REJECTION - RESISTANCE"
-                    detail = f"Ditolak dari Zona Flip {res_level:.0f}" if is_sbr_flip else f"Ditolak dari Res {res_level:.0f}"
-
-                    signals_found.append({
-                        "Tanggal": bar.name, "Sinyal (Label)": signal_label, "Harga": bar['close'], "Detail": detail
-                    })
-                    break
-
-    # --- Cetak Hasil Pemindaian ---
     if not signals_found:
-        print("Tidak ditemukan sinyal historis signifikan yang sesuai kriteria.")
+        print("  [INFO] Scan selesai. Tidak ditemukan pola Golden Cross / BTD yang valid.")
         return pd.DataFrame()
     else:
         df_signals = pd.DataFrame(signals_found).set_index('Tanggal')
-        print(f"Ditemukan total {len(df_signals)} 'spot' historis berlabel (sudah difilter tren):")
+        print(f"  [SUKSES] Ditemukan {len(signals_found)} sinyal historis.")
+        # --- FIX: CETAK DAFTAR SINYAL HISTORIS DENGAN FORMAT Penuh ---
+        print("\n--- DAFTAR SINYAL HISTORIS ---")
         print(df_signals.to_string())
-        
+        print("------------------------------")
+        # ------------------------------------------------------------
         return df_signals
 
 
 def analyze_behavior(df, 
                      clustered_s_base, clustered_r_base, raw_s_base, raw_r_base,
                      clustered_s_detail, clustered_r_detail, raw_s_detail, raw_r_detail,
-                     market_structure, 
-                     short_term_trend,
-                     vol_today,
-                     vol_short_term,
-                     daily_momentum,
-                     rsi_behavior,
-                     fib_levels,   # <-- Argumen baru
-                     pivot_levels, # <-- Argumen baru
-                     num_days):
+                     market_structure, short_term_trend, vol_today, vol_short_term,
+                     daily_momentum, rsi_behavior, fib_levels, pivot_levels, num_days):
     """
-    Menganalisis perilaku HARI TERAKHIR dan MENGEMBALIKAN rangkuman (dictionary).
+    Laporan Analisis Harian.
     """
-    print("\n\n--- (ANALISIS HARI INI) Menganalisis Perilaku Saham ---")
+    print("\n\n--- (ANALISIS HARI INI) Laporan Komprehensif ---")
     
     summary_findings = {}
-    proximity = 0.02 
-    last_bar = df.iloc[-1]
     
-    summary_findings["Market Structure (MA)"] = market_structure
-    summary_findings["Tren Jangka Pendek (Detail)"] = short_term_trend
-    summary_findings["Momentum Harian (OHLC)"] = daily_momentum
-    summary_findings["Perilaku RSI (Detail)"] = rsi_behavior
-    summary_findings["Analisis Volume (Hari Ini)"] = vol_today
-    summary_findings["Analisis Volume (Detail)"] = vol_short_term
-    summary_findings["Harga Saat Ini"] = f"{last_bar['close']:.0f}"
+    # Data Cleaning
+    df_hist = df.dropna(subset=['close']).copy()
+    if df_hist.empty: return {}
     
-    # Tambahkan hasil Fib & Pivot ke laporan
-    summary_findings[f"Proyeksi Fibonacci (Detail {num_days} Hari)"] = fib_levels
-    summary_findings["Proyeksi Pivot Points (Harian)"] = pivot_levels
+    last_bar = df_hist.iloc[-1]
+    last_bar_future = df.iloc[-1]
     
-    # Laporan S/R Basis (Jangka Panjang)
+    current_price = _get_scalar(last_bar, 'close')
+    
+    # Pivot & RSI Manual Calculation (Anti-NaN)
+    if len(df_hist) > 1:
+        prev = df_hist.iloc[-2]
+        pp = (prev['high'] + prev['low'] + prev['close']) / 3
+        pivot_display = {"PP": f"{pp:.0f}"}
+    else:
+        pivot_display = "Data Kurang"
+
+    rsi_val = _get_scalar(last_bar, 'rsi_14', 50)
+    rsi_display = f"{rsi_val:.2f} ({'Bullish' if rsi_val > 50 else 'Bearish'})"
+
+    # --- Isi Laporan ---
+    summary_findings["Market Structure"] = market_structure
+    summary_findings["Tren Jangka Pendek"] = short_term_trend
+    summary_findings["Momentum Harian"] = daily_momentum
+    summary_findings["Perilaku RSI"] = rsi_display
+    summary_findings["Volume Status"] = vol_today
+    summary_findings["Harga Saat Ini"] = f"{current_price:.0f}"
+    
+    summary_findings["Proyeksi Fibonacci"] = fib_levels
+    summary_findings["Proyeksi Pivot Points"] = pivot_display
+    
     sr_base_list = ["--- S/R JANGKA PANJANG (BASIS) ---"]
-    if clustered_r_base.empty:
-        sr_base_list.append("  R (Basis): Tidak ada")
-    else:
-        for idx, row in clustered_r_base.head(3).iterrows():
-            sr_base_list.append(f"  R (Basis): {row['Level']:.0f} (Hits: {row['Hits']}, {row['Kekuatan']})")
-    
-    if clustered_s_base.empty:
-        sr_base_list.append("  S (Basis): Tidak ada")
-    else:
-        for idx, row in clustered_s_base.head(3).iterrows():
-            sr_base_list.append(f"  S (Basis): {row['Level']:.0f} (Hits: {row['Hits']}, {row['Kekuatan']})")
-    summary_findings[f"S/R Jangka Panjang (Basis)"] = sr_base_list
+    for idx, row in clustered_r_base.head(3).iterrows(): sr_base_list.append(f"  R: {row['Level']:.0f}")
+    for idx, row in clustered_s_base.head(3).iterrows(): sr_base_list.append(f"  S: {row['Level']:.0f}")
+    summary_findings[f"S/R Jangka Panjang"] = sr_base_list
 
-    # Laporan S/R Detail (Jangka Pendek)
     sr_detail_list = [f"--- S/R JANGKA PENDEK (DETAIL {num_days} HARI) ---"]
-    if clustered_r_detail.empty:
-        sr_detail_list.append("  R (Detail): Tidak ada")
-    else:
-        for idx, row in clustered_r_detail.head(3).iterrows():
-            sr_detail_list.append(f"  R (Detail): {row['Level']:.0f} (Hits: {row['Hits']}, {row['Kekuatan']})")
+    for idx, row in clustered_r_detail.head(3).iterrows(): sr_detail_list.append(f"  R: {row['Level']:.0f}")
+    for idx, row in clustered_s_detail.head(3).iterrows(): sr_detail_list.append(f"  S: {row['Level']:.0f}")
+    summary_findings[f"S/R Jangka Pendek"] = sr_detail_list
 
-    if clustered_s_detail.empty:
-        sr_detail_list.append("  S (Detail): Tidak ada")
-    else:
-        for idx, row in clustered_s_detail.head(3).iterrows():
-            sr_detail_list.append(f"  S (Detail): {row['Level']:.0f} (Hits: {row['Hits']}, {row['Kekuatan']})")
-    summary_findings[f"S/R Jangka Pendek (Detail {num_days} Hari)"] = sr_detail_list
+    # --- Indikator Tambahan ---
+    adx = _get_scalar(last_bar, 'adx_14', 0)
+    rvol = _get_scalar(last_bar, 'rvol', 0)
+    atr = _get_scalar(last_bar, 'atrr_14', 0)
+    
+    span_a = _get_scalar(last_bar, 'isa_9', 0)
+    span_b = _get_scalar(last_bar, 'isb_26', 0)
+    c_max = max(float(span_a), float(span_b))
+    c_min = min(float(span_a), float(span_b))
+    
+    ichi_stat = "Konsolidasi (Dalam Cloud)"
+    if current_price > c_max: ichi_stat = "Bullish (Di Atas Cloud)"
+    elif current_price < c_min: ichi_stat = "Bearish (Di Bawah Cloud)"
 
-    # --- Logika Kesimpulan ---
-    recent_resistances = raw_r_base[raw_r_base.index < last_bar.name]
-    if recent_resistances.empty:
-        print("\nKesimpulan: Tidak ada data resistance historis yang cukup.")
-        return None 
+    f_span_a = _get_scalar(last_bar_future, 'isa_9', 0)
+    f_span_b = _get_scalar(last_bar_future, 'isb_26', 0)
+    future_cloud = "Bullish (Hijau)" if f_span_a > f_span_b else "Bearish (Merah)"
 
-    last_resistance_level = recent_resistances.iloc[-1]
+    summary_findings["Indikator Tambahan"] = {
+        "ADX": f"{adx:.2f}", "RVOL": f"{rvol:.2f}x", "ATR": f"{atr:.0f}",
+        "Ichimoku (Now)": ichi_stat, "Ichimoku (Future)": future_cloud
+    }
     
-    is_sideways = ("SIDEWAYS" in market_structure) 
-    is_uptrend = ("UPTREND" in market_structure) 
-    is_downtrend = ("DOWNTREND" in market_structure)
-    
-    is_breakout_resistance = last_bar['close'] > last_resistance_level
-    is_volume_strong = "Akumulasi Kuat" in vol_today
-    is_breakout_bb_upper = last_bar['close'] > last_bar['bbu_20_2.0_2.0']
-    
-    kesimpulan = "Perilaku tidak terdeteksi."
-    
-    if is_uptrend and is_breakout_resistance and is_volume_strong:
-        kesimpulan = "**Pola Terdeteksi: Melanjutkan Uptrend, Breakout Resistance (Tervalidasi Volume)**"
-    elif is_downtrend and is_breakout_resistance:
-        kesimpulan = f"**Peringatan: Tren {market_structure}. Breakout saat ini berisiko 'Bull Trap'.**"
-    elif is_breakout_resistance and not is_volume_strong:
-        kesimpulan = "**Peringatan: Potensi False Breakout (Volume Lemah)**"
-    elif is_uptrend and not is_breakout_resistance:
-         kesimpulan = f"**Pola Terdetaksi: {market_structure}, bergerak menuju Res {last_resistance_level:.0f}**"
-    elif is_downtrend:
-        kesimpulan = f"**Pola Terdeteksi: Masih dalam Fase {market_structure}.**"
-    
-    summary_findings["Kesimpulan Utama"] = kesimpulan
-    volatility_check = last_bar['bbb_20_2.0_2.0'] < (df['bbb_20_2.0_2.0'].mean() * 0.7)
-    summary_findings["Volatilitas (BB Width)"] = 'Rendah (Squeeze)' if volatility_check else 'Normal/Tinggi'
-
-    ma_list = [10, 20, 50, 100, 200]
-    ma_detail_list = []
-    all_ma_bullish = True
-    ma_summary_text = ""
-    
-    for ma_len in ma_list:
-        ma_col = f'sma_{ma_len}'
-        if ma_col in last_bar:
-            ma_val = last_bar[ma_col]
-            status = "di ATAS" if last_bar['close'] > ma_val else "di BAWAH"
-            if last_bar['close'] < ma_val:
-                all_ma_bullish = False
-            ma_detail_list.append(f"MA {ma_len}: {ma_val:.0f} (Harga {status} MA)")
-        else:
-            ma_detail_list.append(f"MA {ma_len}: Tidak terhitung (data kurang)")
-            all_ma_bullish = False
-            
-    if all_ma_bullish:
-        ma_summary_text = "TREN SANGAT KUAT (Harga di atas semua MA)"
-    elif last_bar['close'] > last_bar['sma_50']:
-        ma_summary_text = "TREN JANGKA MENENGAH NAIK (Harga di atas MA 50)"
-    else:
-        ma_summary_text = "TREN JANGKA MENENGAH TURUN (Harga di bawah MA 50)"
-
-    summary_findings["Status MA (Ringkasan)"] = ma_summary_text
-    summary_findings["Status MA (Detail)"] = ma_detail_list 
+    patterns = []
+    if _get_scalar(last_bar, 'cdl_hammer', 0) == 100: patterns.append("Hammer")
+    if _get_scalar(last_bar, 'cdl_morningstar', 0) == 100: patterns.append("Morning Star")
+    if _get_scalar(last_bar, 'cdl_doji', 0) == 100: patterns.append("Doji")
+    if _get_scalar(last_bar, 'cdl_engulfing', 0) == 100: patterns.append("Bullish Engulfing")
+    summary_findings["Pola Candle"] = ", ".join(patterns) if patterns else "Normal"
 
     return summary_findings
 
 
 def recommend_trade(df, clustered_supports, clustered_resistances, 
                      raw_supports, raw_resistances, 
-                     raw_s_detail, raw_r_detail, # <-- Argumen baru
+                     raw_s_detail, raw_r_detail,
                      market_structure, min_rr_ratio=1.5):
     """
-    Menganalisis HARI TERAKHIR untuk rekomendasi trade.
-    (VERSI UPDATE: TP menggunakan Fib Extension, SL berdasarkan support TERDEKAT)
+    Rekomendasi Trade ULTIMATE.
     """
-    print("\n--- (REKOMENDASI TRADE) Menganalisis Sinyal Beli Hari Ini ---")
+    print("\n--- (REKOMENDASI TRADE - ULTIMATE SETUP) ---")
     
-    last_bar = df.iloc[-1]
-    current_price = last_bar['close']
+    df_clean = df.dropna(subset=['close']).copy()
+    if df_clean.empty: return {}
+    last_bar = df_clean.iloc[-1]
+    
+    current_price = _get_scalar(last_bar, 'close')
     
     recommendation = {
-        "Rekomendasi": "JANGAN BELI (Tahan/Tunggu)",
-        "Alasan": "Tidak ada sinyal beli yang jelas atau R/R tidak memenuhi.",
-        "Harga Saat Ini": f"{current_price:.0f}",
-        "Area Beli (Entry)": "N/A",
-        "Stop Loss (SL)": "N/A",
-        "Take Profit (TP)": "N/A",
-        "Risk/Reward (R/R)": "N/A"
+        "Rekomendasi": "WAIT / NO TRADE", "Alasan": "Syarat belum terpenuhi.",
+        "Skor Kualitas": "0 Poin", "Tipe Trade": "N/A",
+        "Setup Entry": "N/A", "Stop Loss (SL)": "N/A",
+        "Take Profit (TP)": "N/A", "Risk/Reward": "N/A"
     }
 
-    # --- 2. Filter Kondisi WAJIB ---
-    if "DOWNTREND" in market_structure:
-        recommendation["Alasan"] = f"Kondisi pasar {market_structure}, risiko terlalu tinggi."
-        return recommendation
-
-    if last_bar['rsi_14'] > 70 or last_bar['stochk_10_3_3'] > 80:
-        recommendation["Alasan"] = "Indikator Overbought (RSI > 70 atau Stoch > 80)."
-        return recommendation
-        
-    # --- 3. Tentukan Level SL (Support TERDEKAT dari data BASIS) ---
-    valid_strong_supports_df = clustered_supports[clustered_supports['Level'] < current_price]
-    s_raw_recent = raw_supports.iloc[-3:]
-    valid_soft_supports_series = s_raw_recent[s_raw_recent < current_price]
+    # Data Indikator
+    adx_val = _get_scalar(last_bar, 'adx_14', 0)
+    atr_val = _get_scalar(last_bar, 'atrr_14', current_price * 0.02)
+    if pd.isna(atr_val) or atr_val == 0: atr_val = current_price * 0.02
     
-    nearest_support_level = 0
-    nearest_support_type = "N/A"
+    rvol_val = _get_scalar(last_bar, 'rvol', 0)
+    is_ma50_up = _get_scalar(last_bar, 'slope_ma50_up', False)
+    
+    span_a = _get_scalar(last_bar, 'isa_9', 0)
+    span_b = _get_scalar(last_bar, 'isb_26', 0)
+    is_above_cloud = current_price > max(float(span_a), float(span_b))
+    
+    is_morningstar = _get_scalar(last_bar, 'cdl_morningstar', 0) == 100
+    is_engulfing = _get_scalar(last_bar, 'cdl_engulfing', 0) == 100
+    is_hammer = _get_scalar(last_bar, 'cdl_hammer', 0) == 100
 
-    nearest_strong_support = 0
-    if not valid_strong_supports_df.empty:
-        nearest_strong_support = valid_strong_supports_df['Level'].max()
-
-    nearest_soft_support = 0
-    if not valid_soft_supports_series.empty:
-        nearest_soft_support = valid_soft_supports_series.max()
-
-    if nearest_strong_support == 0 and nearest_soft_support == 0:
-        recommendation["Alasan"] = "Tidak ada support (strong/soft) terdeteksi di bawah harga saat ini untuk basis SL."
-        return recommendation
-    elif nearest_soft_support > nearest_strong_support:
-        nearest_support_level = nearest_soft_support
-        nearest_support_type = "Soft (Raw Pivot)"
+    # Target & SL
+    valid_s = clustered_supports[clustered_supports['Level'] < current_price]
+    if not valid_s.empty:
+        nearest_s = valid_s['Level'].max()
+        s_type = "Cluster"
     else:
-        nearest_support_level = nearest_strong_support
-        nearest_support_type = "Strong (Cluster)"
+        s_recent = raw_s_detail[raw_s_detail < current_price]
+        nearest_s = s_recent.max() if not s_recent.empty else current_price * 0.95
+        s_type = "Pivot"
 
-    entry_support_level = nearest_support_level
+    sl_atr = current_price - (2 * float(atr_val))
+    sl_structure = nearest_s * 0.97
     
-    # --- 4. [LOGIKA TP BARU] Tentukan Level TP (Fib Extension atau Fallback) ---
+    dist_struct = (current_price - sl_structure) / current_price
+    if dist_struct > 0.08: 
+        sl_price = sl_atr; sl_basis = "2x ATR (Tight)"
+    elif sl_atr > sl_structure: 
+        sl_price = sl_structure; sl_basis = f"Structure ({s_type})"
+    else:
+        sl_price = sl_atr; sl_basis = "2x ATR"
+
     tp_price = 0
     tp_basis = "N/A"
-
-    # Coba hitung Fib Extension 1.618 (membutuhkan 3 pivot: Low-High-Low)
+    
     try:
-        if len(raw_s_detail) < 2 or len(raw_r_detail) < 1:
-            raise ValueError("Tidak cukup data pivot detail (L-H-L)")
-
-        # Tentukan titik A, B, C untuk pola L-H-L (Uptrend)
-        # Ambil dari data S/R mentah JANGKA PENDEK (detail)
-        A_low = raw_s_detail.iloc[-2]
-        B_high = raw_r_detail.iloc[-1]
-        C_low = raw_s_detail.iloc[-1]
-
-        # Validasi pola (tanggal harus berurutan L-H-L dan C adalah koreksi)
-        if (A_low.name < B_high.name) and (B_high.name < C_low.name) and (C_low < B_high):
-            swing_range = B_high - A_low
-            fib_target_1618 = C_low + (swing_range * 1.618)
-            
-            # Target harus di atas harga saat ini
-            if fib_target_1618 > current_price:
-                tp_price = fib_target_1618
-                tp_basis = f"Fib Ext 1.618 ({tp_price:.0f})"
-        
-        if tp_price == 0: # Jika pola L-H-L tidak valid
-             raise ValueError("Pola L-H-L tidak valid atau target di bawah harga")
-
-    except Exception as e:
-        # Fallback: Jika Fib Ext gagal, gunakan Resistance Kuat (Basis) TERDEKAT
-        # print(f"Info: Gagal hitung Fib Ext ({e}), fallback ke R terdekat.")
-        
-        # Gunakan clustered_resistances (dari data BASIS)
-        valid_strong_resistances_df = clustered_resistances[clustered_resistances['Level'] > current_price]
-        if valid_strong_resistances_df.empty:
-            recommendation["Alasan"] = "Fib Ext gagal & Tidak ada R terdekat untuk basis TP."
-            return recommendation
-            
-        # Ambil R terdekat (harga terendah yang masih di atas harga saat ini)
-        nearest_strong_resistance = valid_strong_resistances_df['Level'].min()
-        tp_price = nearest_strong_resistance * 0.99 # Ambil 1% di bawah R
-        tp_basis = f"Nearest Strong R ({nearest_strong_resistance:.0f})"
-
-    # --- 5. Hitung Risk/Reward (R/R) ---
-    sl_price = nearest_support_level * 0.98 
+        if len(raw_s_detail) >= 2 and len(raw_r_detail) >= 1:
+            A = raw_s_detail.iloc[-2]; B = raw_r_detail.iloc[-1]; C = raw_s_detail.iloc[-1]
+            date_A = raw_s_detail.index[-2]; date_B = raw_r_detail.index[-1]; date_C = raw_s_detail.index[-1]
+            if (date_A < date_B < date_C) and (C < B):
+                 fib_ext = C + ((B - A) * 1.618)
+                 if fib_ext > current_price: tp_price = fib_ext; tp_basis = "Fib Ext 1.618"
+    except: pass
     
-    risk_per_share = current_price - sl_price
-    reward_per_share = tp_price - current_price
+    if tp_price == 0:
+        valid_r = clustered_resistances[clustered_resistances['Level'] > current_price]
+        if not valid_r.empty: tp_price = valid_r['Level'].min() * 0.99; tp_basis = "Res Cluster"
+        else: tp_price = current_price * 1.1; tp_basis = "ATH / 10%"
+
+    risk = current_price - sl_price
+    reward = tp_price - current_price
+    rr = reward / risk if risk > 0 else 0
+
+    # Scoring
+    score = 0
+    if "UPTREND" in market_structure and is_ma50_up: score += 2
+    elif "UPTREND" in market_structure: score += 1
+    if is_above_cloud: score += 1
+    else: score -= 1
+    if is_morningstar: score += 2
+    elif is_engulfing or is_hammer: score += 1
+
+    rsi_val = _get_scalar(last_bar, 'rsi_14', 50)
+    if adx_val > 20: score += 1
+    if rvol_val > 1.2: score += 1
+    if rsi_val < 65: score += 1
+
+    # Keputusan
+    trade_type = "SWING" if adx_val > 20 else "QUICK"
+    min_score = 4 
+
+    recommendation["Setup Entry"] = f"{nearest_s:.0f} - {current_price:.0f}"
+    recommendation["Stop Loss (SL)"] = f"{sl_price:.0f} ({sl_basis})"
+    recommendation["Take Profit (TP)"] = f"{tp_price:.0f} ({tp_basis})"
+    recommendation["Risk/Reward"] = f"1 : {rr:.2f}"
+    recommendation["Skor Kualitas"] = f"{score} Poin"
+    recommendation["Tipe Trade"] = trade_type
     
-    if risk_per_share <= 0 or reward_per_share <= 0:
-        recommendation["Alasan"] = f"Logika S/R tidak valid (Harga: {current_price:.0f}, SL: {sl_price:.0f}, TP: {tp_price:.0f})."
-        return recommendation
-
-    rr_ratio = reward_per_share / risk_per_share
-
-    # --- 6. Buat Keputusan Akhir ---
-    is_near_entry_support = (current_price - entry_support_level) / entry_support_level < 0.03
-    sma_50_val = last_bar['sma_50']
-    is_ma50_bounce = (last_bar['low'] < sma_50_val) and (current_price > sma_50_val) and (last_bar['close'] > last_bar['open'])
-
-    is_rr_good = rr_ratio >= min_rr_ratio
-    is_confirmed = (last_bar['close'] > last_bar['open']) or (last_bar['macd_12_26_9'] > last_bar['macds_12_26_9'])
-
-    recommendation["Area Beli (Entry)"] = f"~{entry_support_level:.0f} (S/R {nearest_support_type}) ATAU ~{sma_50_val:.0f} (MA 50)"
-    recommendation["Stop Loss (SL)"] = f"~{sl_price:.0f} (Basis: S {nearest_support_type} {entry_support_level:.0f})"
-    recommendation["Take Profit (TP)"] = f"~{tp_price:.0f} (Basis: {tp_basis})"
-    recommendation["Risk/Reward (R/R)"] = f"1 : {rr_ratio:.2f}"
+    dist_to_support = (current_price - nearest_s) / nearest_s
+    entry_valid = dist_to_support < 0.06
     
-    if not is_rr_good:
-        recommendation["Alasan"] = f"Risk/Reward tidak menarik (Hanya 1:{rr_ratio:.2f})."
-        return recommendation 
-
-    if not is_confirmed:
-        recommendation["Alasan"] = "Tidak ada konfirmasi sinyal (candle merah/MACD bearish)."
-        return recommendation 
-
-    if is_near_entry_support:
-        recommendation["Rekomendasi"] = "REKOMENDASI BELI"
-        recommendation["Alasan"] = f"Harga dekat Area Beli S/R ({entry_support_level:.0f}), R/R bagus, Sinyal terkonfirmasi."
-    elif is_ma50_bounce:
-        recommendation["Rekomendasi"] = "REKOMENDASI BELI"
-        recommendation["Alasan"] = f"Harga memantul (Bounce) dari SMA 50, R/R bagus, Sinyal terkonfirmasi."
+    if rr >= 1.5 and score >= min_score and entry_valid:
+        recommendation["Rekomendasi"] = "STRONG BUY"
+    elif rr >= 2.0 and score >= (min_score - 1) and entry_valid:
+        recommendation["Rekomendasi"] = "SPECULATIVE BUY"
     else:
-        recommendation["Alasan"] = f"Harga 'nanggung', jauh dari Area Beli S/R ({entry_support_level:.0f}) dan tidak memantul dari MA50."
-         
+        recommendation["Rekomendasi"] = "WAIT / MONITOR"
+        if not entry_valid: recommendation["Alasan"] = "Harga jauh dari support."
+        else: recommendation["Alasan"] = f"Skor ({score}) / RR ({rr:.2f}) kurang."
+
     return recommendation
 
 
 def analyze_historical_performance(df, df_signals, look_ahead_days=10):
-    """
-    Menganalisis sinyal BTD dan STR dari df_signals untuk melihat 
-    perilaku harga 'look_ahead_days' hari ke depan.
-    """
-    
-    target_signals = ["BUY THE DIP (MA 50)", "SELL THE RALLY (MA 50)"]
-    df_signals_filtered = df_signals[df_signals['Sinyal (Label)'].isin(target_signals)]
-
-    if df_signals_filtered.empty:
-        return pd.DataFrame()
+    """ Analisis performa. """
+    df_clean = df.dropna(subset=['close'])
+    target = ["BUY THE DIP (MA 50)", "TREND - GOLDEN CROSS"]
+    filtered = df_signals[df_signals['Sinyal (Label)'].isin(target)]
+    if filtered.empty: return pd.DataFrame()
 
     results = []
-
-    for signal_date, signal_row in df_signals_filtered.iterrows():
+    for date, row in filtered.iterrows():
         try:
-            signal_idx = df.index.get_loc(signal_date)
-            entry_price = signal_row['Harga'] # Harga saat sinyal
-            
-            future_idx = min(signal_idx + look_ahead_days, len(df) - 1)
-            future_bar = df.iloc[future_idx]
-            
-            future_price = future_bar['close']
-            pct_change = (future_price - entry_price) / entry_price
-            
-            results.append({
-                "Sinyal": signal_row['Sinyal (Label)'],
-                "Tanggal": signal_date.date(),
-                f"Perubahan {look_ahead_days} Hari": pct_change
-            })
+            idx = df_clean.index.get_loc(date)
+            future_idx = min(idx + look_ahead_days, len(df_clean) - 1)
+            entry = row['Harga']
+            future = df_clean.iloc[future_idx]['close']
+            if isinstance(future, pd.Series): future = future.iloc[0]
+            ret = (future - entry) / entry
+            results.append({"Sinyal": row['Sinyal (Label)'], "Return": ret})
+        except: continue
 
-        except KeyError:
-            continue 
-        except Exception as e:
-            print(f"Error saat analisis historis: {e}")
-            continue
-
-    if not results:
-        return pd.DataFrame()
-
-    df_results = pd.DataFrame(results)
-    
-    df_summary = df_results.groupby('Sinyal')[f"Perubahan {look_ahead_days} Hari"].agg(
-        Rata_Rata_Perubahan=lambda x: f"{x.mean():.2%}",
-        Jumlah_Sinyal='count',
-        Sinyal_Positif=lambda x: (x > 0).sum(),
-        Sinyal_Negatif=lambda x: (x < 0).sum()
+    if not results: return pd.DataFrame()
+    return pd.DataFrame(results).groupby('Sinyal')['Return'].agg(
+        Avg_Return=lambda x: f"{x.mean():.2%}",
+        Win_Rate=lambda x: f"{(x > 0).sum() / len(x):.0%}"
     )
-    
-    return df_summary

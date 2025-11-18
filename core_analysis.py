@@ -5,7 +5,6 @@ from scipy.signal import find_peaks
 def cluster_levels(levels, cluster_percent=0.02):
     """
     Mengelompokkan level harga yang berdekatan.
-    (VERSI DIPERBARUI: Menambahkan label 'Kekuatan')
     """
     if levels.empty:
         return pd.DataFrame(columns=['Level', 'Hits', 'Kekuatan'])
@@ -36,12 +35,9 @@ def cluster_levels(levels, cluster_percent=0.02):
     df_clusters['Level'] = df_clusters['Level'].round(0)
     
     def tentukan_kekuatan(hits):
-        if hits >= 5:
-            return "Kuat"
-        elif hits >= 3: # (3 atau 4 hits)
-            return "Sedang"
-        else: # (1 atau 2 hits)
-            return "Lemah"
+        if hits >= 5: return "Kuat"
+        elif hits >= 3: return "Sedang"
+        else: return "Lemah"
     
     df_clusters['Kekuatan'] = df_clusters['Hits'].apply(tentukan_kekuatan)
     
@@ -50,297 +46,244 @@ def cluster_levels(levels, cluster_percent=0.02):
 def find_support_resistance(df):
     """
     Mendeteksi level S/R mentah dan yang sudah di-cluster.
-    (Menggunakan kolom lowercase 'high' dan 'low')
     """
-    peaks_indices, _ = find_peaks(df['high'], distance=10, prominence=df['high'].std() * 0.8)
-    valleys_indices, _ = find_peaks(-df['low'], distance=10, prominence=df['low'].std() * 0.8)
+    df_clean = df.dropna(subset=['high', 'low'])
+    
+    try:
+        peaks_indices, _ = find_peaks(df_clean['high'], distance=10, prominence=df_clean['high'].std() * 0.8)
+        valleys_indices, _ = find_peaks(-df_clean['low'], distance=10, prominence=df_clean['low'].std() * 0.8)
 
-    raw_supports = df['low'].iloc[valleys_indices]
-    raw_resistances = df['high'].iloc[peaks_indices]
-    
-    clustered_supports = cluster_levels(raw_supports, cluster_percent=0.02)
-    clustered_resistances = cluster_levels(raw_resistances, cluster_percent=0.02)
-    
-    return clustered_supports, clustered_resistances, raw_supports, raw_resistances
+        raw_supports = df_clean['low'].iloc[valleys_indices]
+        raw_resistances = df_clean['high'].iloc[peaks_indices]
+        
+        clustered_supports = cluster_levels(raw_supports, cluster_percent=0.02)
+        clustered_resistances = cluster_levels(raw_resistances, cluster_percent=0.02)
+        
+        return clustered_supports, clustered_resistances, raw_supports, raw_resistances
+    except:
+        return pd.DataFrame(columns=['Level']), pd.DataFrame(columns=['Level']), pd.Series(), pd.Series()
 
 def detect_market_structure(df):
     """
-    Menganalisis TREN PASAR (Market Structure) berdasarkan posisi harga
-    terhadap MA 50 dan MA 200.
+    Menganalisis TREN PASAR (Market Structure).
     """
-    if len(df) < 200:
-        return "DATA KURANG (MA 200)"
+    df_clean = df.dropna(subset=['close'])
+    if len(df_clean) < 200: return "DATA KURANG"
         
-    last_bar = df.iloc[-1]
+    last_bar = df_clean.iloc[-1]
     
     try:
         price = last_bar['close']
         ma50 = last_bar['sma_50']
         ma200 = last_bar['sma_200']
-    except KeyError as e:
-        print(f"Error di detect_market_structure: Kolom {e} tidak ada.")
-        return "ERROR (Kolom MA)"
+        
+        if pd.isna(ma50) or pd.isna(ma200): return "MA Belum Terhitung"
 
-    if price > ma50 and ma50 > ma200:
-        return "UPTREND (Sehat)"
-    if price < ma50 and ma50 < ma200:
-        return "DOWNTREND (Parah)"
-    if price > ma200 and price < ma50:
-        return "KONSOLIDASI (Koreksi dalam Uptrend)"
-    if price < ma200 and price > ma50:
-        return "KONSOLIDASI (Rebound dalam Downtrend)"
-    if price > ma200 and ma50 < ma200:
-        return "TRANSISI (Potensi Bullish)"
-    if price < ma200 and ma50 > ma200:
-        return "TRANSISI (Potensi Bearish)"
-    return "SIDEWAYS (Tidak Terdefinisi)"
+        if price > ma50 and ma50 > ma200: return "UPTREND (Sehat)"
+        if price < ma50 and ma50 < ma200: return "DOWNTREND (Parah)"
+        if price > ma200 and price < ma50: return "KONSOLIDASI (Koreksi)"
+        if price < ma200 and price > ma50: return "KONSOLIDASI (Rebound)"
+        if price > ma200: return "UPTREND (Early)"
+        if price < ma200: return "DOWNTREND"
+        return "SIDEWAYS"
+    except: return "ERROR (Indikator MA)"
 
 def analyze_short_term_trend(detail_df, num_days):
     """
-    Menganalisis tren jangka pendek (berdasarkan data 'X' hari terakhir).
+    Menganalisis tren jangka pendek.
     """
-    if detail_df.empty or len(detail_df) < 2:
+    clean_df = detail_df.dropna(subset=['close'])
+    
+    if clean_df.empty or len(clean_df) < 2:
         return f"DATA KURANG ({num_days} Hari)"
     
-    start_price = detail_df.iloc[0]['close']
-    end_price = detail_df.iloc[-1]['close']
+    start_price = clean_df.iloc[0]['close']
+    end_price = clean_df.iloc[-1]['close']
+    
+    if start_price == 0: return "Error (Harga Awal 0)"
+        
     change_pct = (end_price - start_price) / start_price
-    threshold = (num_days / 21) * 0.02
+    threshold = (len(clean_df) / 21) * 0.02 
     
     if change_pct > threshold:
-        return f"Uptrend ({change_pct:+.2%}) dalam {num_days} hari"
+        return f"Uptrend ({change_pct:+.2%}) dalam {len(clean_df)} hari"
     elif change_pct < -threshold:
-        return f"Downtrend ({change_pct:+.2%}) dalam {num_days} hari"
+        return f"Downtrend ({change_pct:+.2%}) dalam {len(clean_df)} hari"
     else:
-        return f"Sideways ({change_pct:+.2%}) dalam {num_days} hari"
+        return f"Sideways ({change_pct:+.2%}) dalam {len(clean_df)} hari"
 
 def analyze_volume_profile(detail_df):
     """
-    Menganalisis volume untuk tanda-tanda Akumulasi atau Distribusi.
-    Melihat hari ini dan data 'detail_df' (X bulan terakhir).
+    Analisis Volume Akumulasi/Distribusi.
     """
-    if len(detail_df) < 20: 
-         return "DATA KURANG (Volume)", "DATA KURANG (Volume)"
+    clean_df = detail_df.dropna(subset=['close', 'volume'])
+    if len(clean_df) < 20: return "Data Kurang", "Data Kurang"
          
-    last_bar = detail_df.iloc[-1]
-    try:
-        is_high_volume = last_bar['volume'] > (last_bar['volume_ma20'] * 1.5)
-        is_green_candle = last_bar['close'] > last_bar['open']
-        is_red_candle = last_bar['close'] < last_bar['open']
-    except KeyError:
-        return "ERROR (Kolom Volume)", "ERROR (Kolom Volume)"
-
+    last_bar = clean_df.iloc[-1]
+    vol_ma = last_bar.get('volume_ma20', last_bar['volume'])
+    if pd.isna(vol_ma): vol_ma = 0
+    
+    is_high_vol = last_bar['volume'] > (vol_ma * 1.5)
+    is_green = last_bar['close'] > last_bar['open']
+    
     today_status = "Volume Normal"
-    if is_high_volume and is_green_candle:
-        today_status = "Akumulasi Kuat (Vol Tinggi, Hijau)"
-    elif is_high_volume and is_red_candle:
-        today_status = "Distribusi Kuat (Vol Tinggi, Merah)"
-    elif is_high_volume:
-        today_status = "Volume Tinggi (Netral/Doji)"
-
-    if len(detail_df) < 25: 
-        return today_status, "DATA KURANG (Jangka Pendek)"
+    if is_high_vol and is_green: today_status = "Akumulasi Kuat (Vol Tinggi)"
+    elif is_high_vol and not is_green: today_status = "Distribusi Kuat (Vol Tinggi)"
 
     akumulasi_days = 0
     distribusi_days = 0
     
-    for index, bar in detail_df.iterrows():
-        if pd.isna(bar['volume_ma20']) or bar['volume_ma20'] == 0:
-            continue 
-        is_high_vol_week = bar['volume'] > (bar['volume_ma20'] * 1.5)
-        if is_high_vol_week and (bar['close'] > bar['open']):
-            akumulasi_days += 1
-        elif is_high_vol_week and (bar['close'] < bar['open']):
-            distribusi_days += 1
+    for index, bar in clean_df.iterrows():
+        v_ma = bar.get('volume_ma20', 0)
+        if pd.isna(v_ma) or v_ma == 0: continue
+        
+        if bar['volume'] > (v_ma * 1.5):
+            if bar['close'] > bar['open']: akumulasi_days += 1
+            else: distribusi_days += 1
     
-    short_term_status = "Seimbang (Tidak ada Vol dominan)"
-    dominance_threshold = max(3, len(detail_df) * 0.1) 
-    
-    if akumulasi_days > distribusi_days and akumulasi_days >= dominance_threshold:
-        short_term_status = f"Cenderung Akumulasi ({akumulasi_days} hari Vol Kuat)"
-    elif distribusi_days > akumulasi_days and distribusi_days >= dominance_threshold:
-        short_term_status = f"Cenderung Distribusi ({distribusi_days} hari Vol Kuat)"
+    short_term_status = "Seimbang"
+    if akumulasi_days > distribusi_days: short_term_status = f"Dominasi Akumulasi ({akumulasi_days} hari)"
+    elif distribusi_days > akumulasi_days: short_term_status = f"Dominasi Distribusi ({distribusi_days} hari)"
     
     return today_status, short_term_status
 
 def analyze_daily_momentum(df):
-    """
-    Menganalisis candle (OHLC) HARI TERAKHIR untuk momentum intraday.
-    """
-    if len(df) < 1:
-        return "DATA KURANG"
-        
-    last_bar = df.iloc[-1]
+    """ Analisis candle terakhir. """
+    clean_df = df.dropna(subset=['close'])
+    if len(clean_df) < 1: return "Data Kurang"
+    
+    last_bar = clean_df.iloc[-1]
     o, h, l, c = last_bar['open'], last_bar['high'], last_bar['low'], last_bar['close']
+    rng = h - l
     
-    total_range = h - l
-    if total_range == 0:
-        return "Tidak ada Pergerakan (Doji Sempurna)"
-        
-    is_green_candle = c > o
-    is_red_candle = c < o
-    body_size = abs(c - o)
-    close_percentile = (c - l) / total_range
-    body_vs_range_ratio = body_size / total_range
+    if rng == 0: return "Doji (Flat)"
     
-    if is_green_candle and close_percentile > 0.9 and body_vs_range_ratio > 0.7:
-        return "Uptrend (Bullish Marubozu / Sangat Kuat)"
-    if is_red_candle and close_percentile < 0.1 and body_vs_range_ratio > 0.7:
-        return "Downtrend (Bearish Marubozu / Sangat Lemah)"
-        
-    upper_wick = h - max(o, c)
-    lower_wick = min(o, c) - l
+    is_green = c > o
+    body_pct = abs(c - o) / rng
     
-    if lower_wick > total_range * 0.5 and close_percentile > 0.5:
-        return "Netral (Tekanan Beli Kuat / Hammer)"
-    if upper_wick > total_range * 0.5 and close_percentile < 0.5:
-        return "Netral (Tekanan Jual Kuat / Shooting Star)"
-    if body_vs_range_ratio < 0.2:
-        return "Sideways (Ragu-ragu / Spinning Top)"
-        
-    if is_green_candle and close_percentile > 0.5:
-        return "Uptrend (Bullish Normal)"
-    if is_red_candle and close_percentile < 0.5:
-        return "Downtrend (Bearish Normal)"
-        
-    if is_green_candle:
-        return "Uptrend (Bullish Normal)"
-    elif is_red_candle:
-        return "Downtrend (Bearish Normal)"
+    if is_green and body_pct > 0.8: return "Bullish Marubozu (Sangat Kuat)"
+    if not is_green and body_pct > 0.8: return "Bearish Marubozu (Sangat Lemah)"
+    if (h - max(o,c)) > rng * 0.6: return "Shooting Star / Rejection Atas"
+    if (min(o,c) - l) > rng * 0.6: return "Hammer / Rejection Bawah"
+    
+    return "Bullish Normal" if is_green else "Bearish Normal"
 
-    return "Sideways (Tidak Terdefinisi)"
-
-# --- [PERUBAHAN] Fungsi ini sekarang menyertakan ARAH pergerakan ---
-def analyze_rsi_behavior(detail_df, overbought=70, oversold=30, mid=50):
-    """
-    Menganalisis perilaku RSI (14) pada data detail.
-    Fokus pada sinyal crossing DAN ARAH PERGERAKAN.
-    """
-    if len(detail_df) < 2:
-        return "DATA KURANG (RSI)"
+def analyze_rsi_behavior(detail_df):
+    """ Analisis RSI (Trend & Divergence). """
+    clean_df = detail_df.dropna(subset=['rsi_14'])
+    if len(clean_df) < 2: return "Data RSI Kurang"
     
-    last_bar = detail_df.iloc[-1]
-    prev_bar = detail_df.iloc[-2]
+    last = clean_df.iloc[-1]['rsi_14']
+    prev = clean_df.iloc[-2]['rsi_14']
     
-    try:
-        rsi_val = last_bar['rsi_14']
-        rsi_prev = prev_bar['rsi_14']
-    except KeyError:
-        return "ERROR (Kolom rsi_14)"
+    trend = "Naik" if last > prev else "Turun"
+    state = "Netral"
+    if last > 70: state = "Overbought (>70)"
+    elif last < 30: state = "Oversold (<30)"
+    elif last > 50: state = "Bullish Zone"
+    else: state = "Bearish Zone"
     
-    # Tentukan Arah Pergerakan RSI
-    direction_text = "Datar"
-    if rsi_val > rsi_prev:
-        direction_text = "Naik (Menuju Overbought)"
-    elif rsi_val < rsi_prev:
-        direction_text = "Turun (Menuju Oversold)"
-    
-    # 1. Cek Sinyal Crossing (Prioritas)
-    is_bullish_cross = rsi_prev < oversold and rsi_val > oversold
-    if is_bullish_cross:
-        return f"SINYAL UPTREND (Cross ke atas {oversold}) - Nilai: {rsi_val:.2f} (Arah: {direction_text})"
-        
-    is_bearish_cross = rsi_prev > overbought and rsi_val < overbought
-    if is_bearish_cross:
-        return f"SINYAL DOWNTREND (Cross ke bawah {overbought}) - Nilai: {rsi_val:.2f} (Arah: {direction_text})"
-
-    # 2. Cek Status Zona (Jika tidak ada crossing)
-    if rsi_val > overbought:
-        return f"Overbought (> {overbought}) - Nilai: {rsi_val:.2f} (Arah: {direction_text})"
-    if rsi_val < oversold:
-        return f"Oversold (< {oversold}) - Nilai: {rsi_val:.2f} (Arah: {direction_text})"
-        
-    # 3. Cek Status Tren (di atas/bawah 50)
-    if rsi_val > mid:
-        return f"Bullish (di atas {mid}) - Nilai: {rsi_val:.2f} (Arah: {direction_text})"
-    else:
-        return f"Bearish (di bawah {mid}) - Nilai: {rsi_val:.2f} (Arah: {direction_text})"
+    return f"{state}, Arah {trend} ({last:.1f})"
 
 def backtest_oscillator_levels(df):
     """
-    Menganalisis data historis untuk menemukan di level osilator (RSI/Stoch)
-    mana harga cenderung berbalik (puncak/lembah).
+    Menganalisis data historis untuk level pembalikan, 
+    menambahkan Rata-rata Perubahan Harga 5 Hari.
+    (FIXED: Mengisi kolom count dan membersihkan NaN)
     """
-    print("\n--- (Backtest Osilator) Menganalisis Puncak & Lembah Historis ---")
     
     peak_stats = pd.DataFrame()
     valley_stats = pd.DataFrame()
+    look_ahead_days = 5
     
+    df_clean = df.dropna(subset=['close', 'rsi_14', 'stochk_10_3_3'])
+    total_bars = len(df_clean)
+
     try:
-        peaks_indices, _ = find_peaks(df['high'], distance=10, prominence=df['high'].std() * 0.8)
+        # 1. PEAKS (Turn Bearish)
+        peaks_indices, _ = find_peaks(df_clean['high'], distance=10, prominence=df_clean['high'].std() * 0.8)
         if peaks_indices.size > 0:
-            df_peaks = df.iloc[peaks_indices]
-            peak_stats = df_peaks[['rsi_14', 'stochk_10_3_3']].describe(percentiles=[.25, .5, .75])
-        else:
-            print("Tidak ditemukan puncak historis yang signifikan untuk dianalisis.")
+            df_peaks = df_clean.iloc[peaks_indices]
             
-        valleys_indices, _ = find_peaks(-df['low'], distance=10, prominence=df['low'].std() * 0.8)
+            peak_changes = []
+            for idx in df_peaks.index: 
+                entry_idx = df_clean.index.get_loc(idx)
+                entry_price = df_clean.iloc[entry_idx]['high']
+                
+                future_idx = min(entry_idx + look_ahead_days, total_bars - 1)
+                future_price = df_clean.iloc[future_idx]['close'] 
+                
+                change = (future_price - entry_price) / entry_price
+                peak_changes.append(change)
+            
+            peak_stats = df_peaks[['rsi_14', 'stochk_10_3_3']].describe(percentiles=[.25, .5, .75])
+            
+            # Tambahkan baris Avg Change 5D dan isi kolom 'count'
+            peak_stats.loc['Avg Change 5D'] = np.nan
+            peak_stats.loc['Avg Change 5D', 'rsi_14'] = np.mean(peak_changes)
+            peak_stats.loc['Avg Change 5D', 'count'] = len(peak_changes) # FIX: Isi kolom count
+            peak_stats.loc['Avg Change 5D', 'stochk_10_3_3'] = np.nan 
+            
+        # 2. VALLEYS (Turn Bullish)
+        valleys_indices, _ = find_peaks(-df_clean['low'], distance=10, prominence=df_clean['low'].std() * 0.8)
         if valleys_indices.size > 0:
-            df_valleys = df.iloc[valleys_indices]
+            df_valleys = df_clean.iloc[valleys_indices]
+
+            valley_changes = []
+            for idx in df_valleys.index:
+                entry_idx = df_clean.index.get_loc(idx)
+                entry_price = df_clean.iloc[entry_idx]['low']
+                
+                future_idx = min(entry_idx + look_ahead_days, total_bars - 1)
+                future_price = df_clean.iloc[future_idx]['close']
+                
+                change = (future_price - entry_price) / entry_price
+                valley_changes.append(change)
+
             valley_stats = df_valleys[['rsi_14', 'stochk_10_3_3']].describe(percentiles=[.25, .5, .75])
-        else:
-            print("Tidak ditemukan lembah historis yang signifikan untuk dianalisis.")
+            
+            # Tambahkan baris Avg Change 5D dan isi kolom 'count'
+            valley_stats.loc['Avg Change 5D'] = np.nan
+            valley_stats.loc['Avg Change 5D', 'rsi_14'] = np.mean(valley_changes)
+            valley_stats.loc['Avg Change 5D', 'count'] = len(valley_changes) # FIX: Isi kolom count
+            valley_stats.loc['Avg Change 5D', 'stochk_10_3_3'] = np.nan
             
     except Exception as e:
-        print(f"Error saat backtest osilator: {e}")
+        print(f"Debug Backtest Error: {e}")
         return pd.DataFrame(), pd.DataFrame()
+    
+    # Format Rata-rata Perubahan Harga
+    if 'Avg Change 5D' in peak_stats.index:
+         peak_stats.loc['Avg Change 5D', 'rsi_14'] = f"{peak_stats.loc['Avg Change 5D', 'rsi_14']:+.2%}"
+    if 'Avg Change 5D' in valley_stats.index:
+         valley_stats.loc['Avg Change 5D', 'rsi_14'] = f"{valley_stats.loc['Avg Change 5D', 'rsi_14']:+.2%}"
         
     return peak_stats, valley_stats
 
-# --- [PERUBAHAN] Fungsi baru untuk Fibonacci Retracement ---
 def calculate_fibonacci_levels(detail_df):
-    """
-    Menghitung level Fibonacci Retracement berdasarkan
-    titik tertinggi dan terendah dari data 'detail'.
-    """
-    if detail_df.empty:
-        return {}
+    """ Fibonacci Retracement. """
+    clean_df = detail_df.dropna(subset=['close'])
+    if clean_df.empty: return {}
 
-    swing_low = detail_df['low'].min()
-    swing_high = detail_df['high'].max()
-    is_uptrend = detail_df.iloc[-1]['close'] > detail_df.iloc[0]['close']
+    swing_low = clean_df['low'].min()
+    swing_high = clean_df['high'].max()
     
-    fib_levels = [0.236, 0.382, 0.5, 0.618, 0.786]
-    results = {}
+    levels = [0.236, 0.382, 0.5, 0.618, 0.786]
+    res = {"Swing": f"L:{swing_low:.0f} - H:{swing_high:.0f}"}
+    
+    for lvl in levels:
+        price = swing_high - (swing_high - swing_low) * lvl
+        res[f"Ret {lvl:.3f}"] = f"{price:.0f}"
+    return res
 
-    if is_uptrend:
-        results['Status'] = f"Uptrend (Swing Low: {swing_low:.0f}, Swing High: {swing_high:.0f})"
-        for level in fib_levels:
-            price = swing_high - (swing_high - swing_low) * level
-            results[f"{level*100:.1f}%"] = f"{price:.0f}"
-    else:
-        results['Status'] = f"Downtrend (Swing Low: {swing_low:.0f}, Swing High: {swing_high:.0f})"
-        for level in fib_levels:
-            price = swing_low + (swing_high - swing_low) * level
-            results[f"{level*100:.1f}%"] = f"{price:.0f}"
-            
-    return results
-
-# --- [PERUBAHAN] Fungsi baru untuk Pivot Points Harian ---
 def calculate_pivot_points(df):
-    """
-    Menghitung level Pivot Points (PP) harian, R1, S1, R2, S2
-    berdasarkan data HARI SEBELUMNYA.
-    """
-    if len(df) < 2:
-        return {}
-        
-    prev_bar = df.iloc[-2]
-    h = prev_bar['high']
-    l = prev_bar['low']
-    c = prev_bar['close']
+    """ Pivot Points Harian. """
+    clean_df = df.dropna(subset=['close'])
+    if len(clean_df) < 2: return {}
     
-    pp = (h + l + c) / 3
-    r1 = (2 * pp) - l
-    s1 = (2 * pp) - h
-    r2 = pp + (h - l)
-    s2 = pp - (h - l)
+    prev = clean_df.iloc[-2] # Kemarin
+    pp = (prev['high'] + prev['low'] + prev['close']) / 3
+    r1 = (2 * pp) - prev['low']
+    s1 = (2 * pp) - prev['high']
     
-    results = {
-        "Pivot Point (PP)": f"{pp:.0f}",
-        "Resistance 1 (R1)": f"{r1:.0f}",
-        "Support 1 (S1)": f"{s1:.0f}",
-        "Resistance 2 (R2)": f"{r2:.0f}",
-        "Support 2 (S2)": f"{s2:.0f}"
-    }
-    return results
+    return {"PP": f"{pp:.0f}", "R1": f"{r1:.0f}", "S1": f"{s1:.0f}"}

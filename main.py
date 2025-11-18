@@ -1,7 +1,7 @@
 import argparse
 import pandas as pd 
 
-# --- Impor fungsi dari file .py Anda yang lain ---
+# --- Impor Modul Custom ---
 from data_loader import get_stock_data_from_csv
 from core_analysis import (
     find_support_resistance, 
@@ -20,42 +20,46 @@ from reporting import (
     recommend_trade,
     analyze_historical_performance
 )
-# from charting import create_chart
 
 def main():
-    # 1. Setup Argumen Command Line
-    parser = argparse.ArgumentParser(description="Backtesting Behavior Saham dari CSV.")
+    # 1. Setup Argumen
+    parser = argparse.ArgumentParser(description="Backtesting Behavior Saham (Ultimate Setup).")
     parser.add_argument('--file', type=str, required=True, 
                         help="Path ke file CSV (Contoh: BBCA.JK_history.csv)")
-    
     parser.add_argument('--days', type=int, default=60,
-                        help="Jumlah HARI trading terakhir untuk analisis detail (default: 60, sekitar 3 bln)")
+                        help="Jumlah HARI trading terakhir untuk analisis detail (default: 60)")
                         
     args = parser.parse_args()
 
-    # 2. Ambil dan Hitung Data dari CSV
+    # 2. Load Data
     data = get_stock_data_from_csv(args.file)
     
     if data is not None:
+        # --- FIX PENTING DISINI ---
+        # Kita pisahkan data: 
+        # 'data' = Full (termasuk 26 hari masa depan Ichimoku) untuk reporting.py
+        # 'data_hist' = Hanya history (s/d hari ini) untuk slicing detail
+        data_hist = data.dropna(subset=['close'])
         
-        # Buat DataFrame 'detail'
+        # Setup DataFrame 'detail' mengambil dari data_hist (bukan data raw)
         days_to_analyze = args.days
-        if days_to_analyze > len(data):
-            print(f"Peringatan: --days={args.days} terlalu besar, menggunakan seluruh data ({len(data)} hari) sebagai detail.")
-            detail_data = data
-            days_to_analyze = len(data)
+        if days_to_analyze > len(data_hist):
+            print(f"Peringatan: Data hanya tersedia {len(data_hist)} hari.")
+            detail_data = data_hist
+            days_to_analyze = len(data_hist)
         else:
-            detail_data = data.iloc[-days_to_analyze:]
+            detail_data = data_hist.iloc[-days_to_analyze:]
         
-        print(f"\n--- Menggunakan {len(data)} bar (Basis) dan {len(detail_data)} bar (Detail {days_to_analyze} hari) ---")
+        print(f"\n--- Menggunakan {len(data_hist)} bar (Basis) dan {len(detail_data)} bar (Detail) ---")
 
-        # 3. Analisis BASIS (Full Data 1-3 Tahun)
-        print("\n--- (Analisis Basis) Menghitung S/R Makro & Struktur MA ---")
-        clustered_s_base, clustered_r_base, raw_s_base, raw_r_base = find_support_resistance(data)
-        market_structure = detect_market_structure(data)
+        # 3. Analisis Inti (Support/Resistance & Market Structure)
+        # Gunakan data_hist agar find_peaks tidak bingung dengan NaN
+        print("\n--- (Analisis Basis) Menghitung S/R & Struktur ---")
+        clustered_s_base, clustered_r_base, raw_s_base, raw_r_base = find_support_resistance(data_hist)
+        market_structure = detect_market_structure(data_hist)
         
-        # Panggil Backtest Osilator
-        peak_stats, valley_stats = backtest_oscillator_levels(data) 
+        # Backtest Osilator (Gunakan data historis)
+        peak_stats, valley_stats = backtest_oscillator_levels(data_hist)
         
         print("\n--- HASIL BACKTEST OSILATOR (LEVEL PEMBALIKAN HISTORIS) ---")
         if not peak_stats.empty:
@@ -70,87 +74,63 @@ def main():
         else:
             print("\n== Statistik Lembah: Tidak ada data ==")
 
-        # 4. Analisis DETAIL (Data 'X' Hari Terakhir)
-        print("\n--- (Analisis Detail) Menghitung S/R Mikro & Tren Jangka Pendek ---")
+        # 4. Analisis Detail (Mikro)
+        print("\n--- (Analisis Detail) Menghitung Tren Jangka Pendek ---")
         clustered_s_detail, clustered_r_detail, raw_s_detail, raw_r_detail = find_support_resistance(detail_data)
         
-        # 5. Analisis Gabungan (Momentum & Volume)
+        # Analisis Tambahan
         short_term_trend = analyze_short_term_trend(detail_data, days_to_analyze) 
         vol_today, vol_short_term = analyze_volume_profile(detail_data) 
-        daily_momentum = analyze_daily_momentum(data)
+        daily_momentum = analyze_daily_momentum(data_hist)
         rsi_behavior = analyze_rsi_behavior(detail_data)
         
         fib_levels = calculate_fibonacci_levels(detail_data)
-        pivot_levels = calculate_pivot_points(data)
+        pivot_levels = calculate_pivot_points(data_hist)
 
-        # 6. Jalankan Pemindai Sinyal Historis
+        # 5. Scan Sinyal Historis (Kirim full 'data' karena reporting.py sudah handle NaN)
         df_signals = scan_for_signals(data, clustered_s_base, clustered_r_base)
         
-        # 7. Panggil fungsi analisis perilaku historis
         historical_analysis = analyze_historical_performance(data, df_signals)
         print("\n--- ANALISIS PERFORMA SINYAL HISTORIS (10 Hari ke Depan) ---")
         if historical_analysis.empty:
-            print("Tidak ada sinyal BTD/STR historis yang ditemukan untuk dianalisis.")
+            print("Belum ada data sinyal historis yang cukup.")
         else:
             print(historical_analysis.to_string())
 
-        # 8. Ambil Rangkuman Laporan Hari Terakhir
+        # 6. Laporan Harian (Summary)
+        # Kirim full 'data' agar bisa melihat Future Cloud Ichimoku
         summary_report = analyze_behavior(
             data, 
             clustered_s_base, clustered_r_base, raw_s_base, raw_r_base,
             clustered_s_detail, clustered_r_detail, raw_s_detail, raw_r_detail,
-            market_structure, 
-            short_term_trend,
-            vol_today,
-            vol_short_term,
-            daily_momentum,
-            rsi_behavior,
-            fib_levels,
-            pivot_levels,
-            days_to_analyze 
+            market_structure, short_term_trend, vol_today, vol_short_term,
+            daily_momentum, rsi_behavior, fib_levels, pivot_levels, days_to_analyze 
         )
         
-        # 9. Cetak Rangkuman Laporan
-        print("\n--- RANGKUMAN ANALISIS HARI TERAKHIR ---")
         if summary_report:
             for key, value in summary_report.items():
                 if isinstance(value, list) or isinstance(value, dict): 
                     print(f"  - {key}:")
-                    
                     if isinstance(value, dict):
-                        for k, v in value.items():
-                            print(f"    -> {k}: {v}")
+                        for k, v in value.items(): print(f"    -> {k}: {v}")
                     else:
-                        for item in value:
-                            print(f"    -> {item}")
+                        for item in value: print(f"    -> {item}")
                 else:
                     print(f"  - {key}: {value}")
         
-        
-        # 10. Dapatkan Rekomendasi Trade
-        print("\n--- (REKOMENDASI) Menggunakan S/R Jangka Panjang (Basis) ---")
-        # --- [PERUBAHAN] Kirim raw_s_detail dan raw_r_detail ke 'recommend_trade' ---
+        # 7. Rekomendasi Trade
         trade_recommendation = recommend_trade(
             data, 
             clustered_s_base, clustered_r_base, 
             raw_s_base, raw_r_base, 
-            raw_s_detail, raw_r_detail, # <-- Argumen baru untuk Fib Ext
+            raw_s_detail, raw_r_detail,
             market_structure, 
             min_rr_ratio=1.5
         )
-        # --- [AKHIR PERUBAHAN] ---
         
-        # 11. Cetak Rekomendasi Trade
-        print("\n--- REKOMENDASI TRADE HARI INI ---")
         if trade_recommendation:
             for key, value in trade_recommendation.items():
                 print(f"  - {key}: {value}")
 
-        
-        # 12. Buat dan simpan visualisasi (Masih dikomentari)
-        # output_filename = args.file.replace('.csv', '_analysis_chart.png').replace('.CSV', '_analysis_chart.png')
-        # create_chart(data, clustered_s_base, clustered_r_base, raw_s_base, raw_r_base, df_signals, market_structure, filename=output_filename)
-
-# Ini adalah entry point program
 if __name__ == "__main__":
     main()

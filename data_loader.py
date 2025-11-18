@@ -3,14 +3,12 @@ import pandas_ta as ta
 
 def get_stock_data_from_csv(filepath):
     """
-    Membaca data saham dari file CSV dan menghitung indikator.
-    (VERSI DIPERBAIKI: Mengganti nama 'Price' -> 'Date' secara eksplisit)
+    Membaca data saham dan menghitung indikator teknikal LENGKAP (All-in-One).
+    Termasuk: 5-Dimensi (ATR, ADX, RVOL) + Ichimoku + Candle Patterns.
     """
     print(f"Membaca data dari {filepath}...")
     try:
-        # PENTING: Disesuaikan untuk file spesifik Anda
-        # header=0 -> Baris pertama adalah header
-        # skiprows=[1, 2] -> Lewati baris ke-2 dan ke-3 (indeks 1 dan 2)
+        # Sesuaikan skiprows jika header CSV Anda bergeser
         df = pd.read_csv(filepath, header=0, skiprows=[1, 2])
     except FileNotFoundError:
         print(f"Error: File tidak ditemukan di {filepath}")
@@ -23,76 +21,78 @@ def get_stock_data_from_csv(filepath):
         print("Error: File CSV kosong.")
         return None
 
-    # --- Standarisasi Data (LOGIKA BARU YANG LEBIH BERSIH) ---
-    
-    # 1. Ganti nama 'Price' menjadi 'Date' (Sesuai permintaan Anda)
-    #    Ini untuk menangani format CSV Anda yang unik.
+    # --- Standarisasi Kolom ---
     if 'Price' in df.columns:
         df.rename(columns={'Price': 'Date'}, inplace=True)
-        print("Catatan: Kolom 'Price' telah diganti namanya menjadi 'Date'.")
 
-    # 2. Cari kolom Tanggal (Date) dan jadikan index
     date_col = None
-    if 'Date' in df.columns:
-        date_col = 'Date'
-    elif 'Tanggal' in df.columns:
-        date_col = 'Tanggal'
+    if 'Date' in df.columns: date_col = 'Date'
+    elif 'Tanggal' in df.columns: date_col = 'Tanggal'
     
-    # Jika tidak ada 'Date' atau 'Tanggal' (setelah di-rename), baru error
     if not date_col:
-        print(f"Error: CSV harus punya kolom 'Date' atau 'Tanggal'. Kolom ditemukan: {df.columns.values}")
+        print(f"Error: CSV harus punya kolom Date/Tanggal.")
         return None
         
     try:
-        # Konversi ke datetime dan set sebagai index
         df[date_col] = pd.to_datetime(df[date_col], format='%Y-%m-%d')
         df.set_index(date_col, inplace=True)
-        # Logika 'drop' yang membingungkan sudah tidak perlu lagi
-    except Exception as e:
-        print(f"Error saat memproses kolom tanggal '{date_col}': {e}")
+    except:
         return None
 
-    # --- Sisa file ini sama persis ---
-
-    # 3. Cek kolom wajib (Open, High, Low, Close, Volume)
     required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
     if not all(col in df.columns for col in required_cols):
-        print(f"Error: CSV harus memiliki kolom 'Open', 'High', 'Low', 'Close', 'Volume'.")
-        print(f"Kolom yang ditemukan: {df.columns.values}")
+        print(f"Error: Kolom {required_cols} wajib ada.")
         return None
     
-    # 4. Konversi kolom OHLCV ke numerik (PENTING untuk CSV)
     for col in required_cols:
          df[col] = pd.to_numeric(df[col], errors='coerce')
-
     df.dropna(subset=required_cols, inplace=True)
     
-    # --- Perhitungan Indikator ---
+    # --- PERHITUNGAN INDIKATOR (ULTIMATE VERSION) ---
     try:
-        # Gunakan 'close=df['Close']' secara eksplisit karena nama kolom
+        # 1. Dasar (RSI, MACD, BB, Stoch, MA)
         df.ta.rsi(close=df['Close'], length=14, append=True)
         df.ta.macd(close=df['Close'], fast=12, slow=26, signal=9, append=True)
         df.ta.bbands(close=df['Close'], length=20, std=2, append=True)
         df.ta.stoch(high=df['High'], low=df['Low'], close=df['Close'], k=10, d=3, smooth_k=3, append=True)
         
-        # Moving Averages
         df.ta.sma(close=df['Close'], length=10, append=True)
         df.ta.sma(close=df['Close'], length=20, append=True)
         df.ta.sma(close=df['Close'], length=50, append=True)
-        df.ta.sma(close=df['Close'], length=100, append=True)
         df.ta.sma(close=df['Close'], length=200, append=True)
-        
         df['volume_ma20'] = df['Volume'].rolling(window=20).mean()
 
-        # Ubah semua NAMA KOLOM jadi lowercase (Termasuk 'SMA_10' -> 'sma_10')
+        # 2. Setup 5-Dimensi (ATR, ADX, RVOL, Slope)
+        # Gunakan assign langsung untuk memastikan nama kolom benar
+        atr_series = df.ta.atr(high=df['High'], low=df['Low'], close=df['Close'], length=14)
+        df['atrr_14'] = atr_series 
+
+        adx_df = df.ta.adx(high=df['High'], low=df['Low'], close=df['Close'], length=14)
+        if not adx_df.empty:
+             df['adx_14'] = adx_df.iloc[:, 0] # Ambil kolom pertama (ADX main)
+
+        df['rvol'] = df['Volume'] / df['volume_ma20']
+
+        sma50 = df.ta.sma(close=df['Close'], length=50)
+        df['slope_ma50_up'] = sma50 > sma50.shift(5)
+
+        # 3. Ichimoku Cloud (Span A & Span B)
+        # Ichimoku return 2 dataframe (conversion/base & spans)
+        ichimoku_df, span_df = df.ta.ichimoku(high=df['High'], low=df['Low'], close=df['Close'])
+        df = pd.concat([df, ichimoku_df, span_df], axis=1)
+
+        # 4. Candlestick Patterns
+        # 100 = Bullish, -100 = Bearish
+        df.ta.cdl_pattern(open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
+                          name=["hammer", "doji", "morningstar", "engulfing"], append=True)
+
+        # 5. Finalisasi Nama Kolom (Lowercase)
         df.columns = df.columns.str.lower()
         
-        print("Data dan indikator berhasil dihitung.")
+        print("Indikator berhasil: Dasar + 5-Dimensi + Ichimoku + Candle Pattern.")
         
     except Exception as e:
-        print(f"Error saat menghitung indikator: {e}. Periksa nama kolom.")
+        print(f"Error indikator: {e}")
         return None
 
-    # Hapus baris di awal yang punya NaN (karena MA, dll)
-    # df = df.dropna()
     return df
