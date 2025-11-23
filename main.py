@@ -1,136 +1,133 @@
-import argparse
-import pandas as pd 
+import os
+import sys
+from engine import StockAnalyzer
 
-# --- Impor Modul Custom ---
-from data_loader import get_stock_data_from_csv
-from core_analysis import (
-    find_support_resistance, 
-    detect_market_structure,
-    analyze_short_term_trend, 
-    analyze_volume_profile,
-    analyze_daily_momentum,
-    analyze_rsi_behavior,
-    backtest_oscillator_levels,
-    calculate_fibonacci_levels,
-    calculate_pivot_points
-)
-from reporting import (
-    scan_for_signals, 
-    analyze_behavior,
-    recommend_trade,
-    analyze_historical_performance
-)
+def clear_screen():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+def print_header():
+    print("="*60)
+    print("      SIMPLE IHSG STOCK VALIDATOR (CLI)      ")
+    print("      Features: Sentiment + Grid Search + Chart Patterns")
+    print("="*60)
+
+def print_report(data):
+    if not data:
+        print("\n[!] Error: Could not fetch data or invalid ticker.")
+        return
+
+    # 1. Basic Info
+    print(f"\nSTOCK: {data['name']} ({data['ticker']})")
+    print(f"PRICE: Rp {data['price']:,.0f}")
+    
+    if data['is_ipo']:
+        print(f"[!] WARNING: IPO DETECTED ({data['days_listed']} days listed)")
+    
+    # 2. THE BIG ACTION
+    print("\n" + "*"*40)
+    print(f"  {data['action']}")
+    print("*"*40)
+    print(f"Logic: {data['trigger']}")
+
+    # 3. CHART PATTERNS
+    print(f"\n--- CHART PATTERNS (Pattern Recognition) ---")
+    
+    # VCP
+    vcp = data['context'].get('vcp', {})
+    if vcp.get('detected'):
+        print(f"[+] VCP DETECTED: {vcp['msg']}")
+    else:
+        print(f"[-] VCP: No clear contraction detected.")
+        
+    # Geometry (Triangles/Pennants)
+    geo = data['context'].get('geo', {})
+    if geo.get('pattern') != "None":
+        print(f"[+] GEOMETRY: {geo['pattern']}")
+        print(f"    {geo['msg']}")
+    else:
+        print(f"[-] GEOMETRY: No Triangle or Pennant formed yet.")
+
+    # 4. SMART TRADE PLAN
+    plan = data['trade_plan']
+    print(f"\n--- SMART TRADE PLAN (Status: {plan['status']}) ---")
+    
+    if "PENDING" in plan['status']:
+         print(f"ADVICE:       {plan.get('note', 'Wait for setup.')}")
+         print(f"WAIT FOR:     Rp {plan['entry']:,.0f} (Ideal Entry)")
+    else:
+         print(f"ENTRY PRICE:  Rp {plan['entry']:,.0f}")
+    
+    if plan['entry'] > 0:
+        entry = plan['entry']
+        sl_pct = ((plan['stop_loss'] - entry) / entry) * 100
+        tp_pct = ((plan['take_profit'] - entry) / entry) * 100
+        print(f"STOP LOSS:    Rp {plan['stop_loss']:,.0f} ({sl_pct:.1f}%)")
+        print(f"TAKE PROFIT:  Rp {plan['take_profit']:,.0f} (+{tp_pct:.1f}%)")
+        print(f"Risk/Reward:  {plan['risk_reward']}")
+
+    # 5. NEWS SENTIMENT (RESTORED)
+    print(f"\n--- NEWS SENTIMENT ---")
+    s_data = data['sentiment']
+    print(f"Rating: {s_data['sentiment']} (Score: {s_data['score']})")
+    if not s_data['headlines']:
+        print("  - No recent news found.")
+    for hl in s_data['headlines']:
+        print(f"  - {hl}")
+
+    # 6. CONTEXT (OBV & Dist Support)
+    ctx = data['context']
+    print(f"\n--- CONTEXT & INDICATORS ---")
+    print(f"Trend:           {ctx['trend']}")
+    print(f"OBV Status:      {ctx['obv_status']}")
+    print(f"Volatility(ATR): Rp {ctx['atr']:,.0f} (Daily Range)")
+    print(f"Support (20d):   Rp {ctx['support']:,.0f} (Dist: {ctx['dist_support']:.1f}%)")
+    print(f"Resistance (20d):Rp {ctx['resistance']:,.0f}")
+
+    # 7. FIBONACCI
+    print(f"\n--- FIBONACCI KEY LEVELS (Last 120 Days) ---")
+    fibs = ctx.get('fib_levels', {})
+    if fibs:
+        print(f"High (0.0):      Rp {fibs.get('0.0 (High)', 0):,.0f}")
+        print(f"0.5 Halfway:     Rp {fibs.get('0.5 (Half)', 0):,.0f}")
+        print(f"0.618 GOLDEN:    Rp {fibs.get('0.618 (Golden)', 0):,.0f}  <-- Strong Support")
+        print(f"Low (1.0):       Rp {fibs.get('1.0 (Low)', 0):,.0f}")
+
+    # 8. Active Strategies
+    print(f"\n--- ✅ STRATEGIES ACTIVE TODAY ---")
+    active_strats = [s for s in data['all_strategies'] if s['is_triggered_today']]
+    if not active_strats:
+        print("[-] No strategies are currently triggered.")
+    else:
+        for strat in active_strats:
+            print(f"[+] {strat['strategy']}")
+            print(f"    Criteria:    {strat['details']}")
+            print(f"    Hist. Stats: Win Rate {strat['win_rate']:.1f}% | Hold {strat['hold_days']} Days")
+            print("-" * 30)
+
+    print("\n" + "="*60)
 
 def main():
-    # 1. Setup Argumen
-    parser = argparse.ArgumentParser(description="Backtesting Behavior Saham (Ultimate Setup).")
-    parser.add_argument('--file', type=str, required=True, 
-                        help="Path ke file CSV (Contoh: BBCA.JK_history.csv)")
-    parser.add_argument('--days', type=int, default=60,
-                        help="Jumlah HARI trading terakhir untuk analisis detail (default: 60)")
-                        
-    args = parser.parse_args()
-
-    # 2. Load Data
-    data = get_stock_data_from_csv(args.file)
-    
-    if data is not None:
-        # --- FIX PENTING DISINI ---
-        # Kita pisahkan data: 
-        # 'data' = Full (termasuk 26 hari masa depan Ichimoku) untuk reporting.py
-        # 'data_hist' = Hanya history (s/d hari ini) untuk slicing detail
-        data_hist = data.dropna(subset=['close'])
+    while True:
+        clear_screen()
+        print_header()
         
-        # Setup DataFrame 'detail' mengambil dari data_hist (bukan data raw)
-        days_to_analyze = args.days
-        if days_to_analyze > len(data_hist):
-            print(f"Peringatan: Data hanya tersedia {len(data_hist)} hari.")
-            detail_data = data_hist
-            days_to_analyze = len(data_hist)
-        else:
-            detail_data = data_hist.iloc[-days_to_analyze:]
+        ticker = input("\nEnter Ticker (e.g. BBCA, ANTM) or 'Q' to quit: ").strip()
         
-        print(f"\n--- Menggunakan {len(data_hist)} bar (Basis) dan {len(detail_data)} bar (Detail) ---")
-
-        # 3. Analisis Inti (Support/Resistance & Market Structure)
-        # Gunakan data_hist agar find_peaks tidak bingung dengan NaN
-        print("\n--- (Analisis Basis) Menghitung S/R & Struktur ---")
-        clustered_s_base, clustered_r_base, raw_s_base, raw_r_base = find_support_resistance(data_hist)
-        market_structure = detect_market_structure(data_hist)
-        
-        # Backtest Osilator (Gunakan data historis)
-        peak_stats, valley_stats = backtest_oscillator_levels(data_hist)
-        
-        print("\n--- HASIL BACKTEST OSILATOR (LEVEL PEMBALIKAN HISTORIS) ---")
-        if not peak_stats.empty:
-            print("\n== Statistik Indikator saat Puncak (Turn Bearish) ==")
-            print(peak_stats.to_string())
-        else:
-            print("\n== Statistik Puncak: Tidak ada data ==")
+        if ticker.lower() == 'q':
+            print("Goodbye! Cuan always.")
+            sys.exit()
             
-        if not valley_stats.empty:
-            print("\n== Statistik Indikator saat Lembah (Turn Bullish) ==")
-            print(valley_stats.to_string())
-        else:
-            print("\n== Statistik Lembah: Tidak ada data ==")
-
-        # 4. Analisis Detail (Mikro)
-        print("\n--- (Analisis Detail) Menghitung Tren Jangka Pendek ---")
-        clustered_s_detail, clustered_r_detail, raw_s_detail, raw_r_detail = find_support_resistance(detail_data)
+        if not ticker:
+            continue
+            
+        print(f"\nAnalyzing {ticker.upper()}... (Fetching Data & Crunching Numbers)")
         
-        # Analisis Tambahan
-        short_term_trend = analyze_short_term_trend(detail_data, days_to_analyze) 
-        vol_today, vol_short_term = analyze_volume_profile(detail_data) 
-        daily_momentum = analyze_daily_momentum(data_hist)
-        rsi_behavior = analyze_rsi_behavior(detail_data)
+        analyzer = StockAnalyzer(ticker)
+        report_data = analyzer.generate_final_report()
         
-        fib_levels = calculate_fibonacci_levels(detail_data)
-        pivot_levels = calculate_pivot_points(data_hist)
-
-        # 5. Scan Sinyal Historis (Kirim full 'data' karena reporting.py sudah handle NaN)
-        df_signals = scan_for_signals(data, clustered_s_base, clustered_r_base)
+        print_report(report_data)
         
-        historical_analysis = analyze_historical_performance(data, df_signals)
-        print("\n--- ANALISIS PERFORMA SINYAL HISTORIS (10 Hari ke Depan) ---")
-        if historical_analysis.empty:
-            print("Belum ada data sinyal historis yang cukup.")
-        else:
-            print(historical_analysis.to_string())
-
-        # 6. Laporan Harian (Summary)
-        # Kirim full 'data' agar bisa melihat Future Cloud Ichimoku
-        summary_report = analyze_behavior(
-            data, 
-            clustered_s_base, clustered_r_base, raw_s_base, raw_r_base,
-            clustered_s_detail, clustered_r_detail, raw_s_detail, raw_r_detail,
-            market_structure, short_term_trend, vol_today, vol_short_term,
-            daily_momentum, rsi_behavior, fib_levels, pivot_levels, days_to_analyze 
-        )
-        
-        if summary_report:
-            for key, value in summary_report.items():
-                if isinstance(value, list) or isinstance(value, dict): 
-                    print(f"  - {key}:")
-                    if isinstance(value, dict):
-                        for k, v in value.items(): print(f"    -> {k}: {v}")
-                    else:
-                        for item in value: print(f"    -> {item}")
-                else:
-                    print(f"  - {key}: {value}")
-        
-        # 7. Rekomendasi Trade
-        trade_recommendation = recommend_trade(
-            data, 
-            clustered_s_base, clustered_r_base, 
-            raw_s_base, raw_r_base, 
-            raw_s_detail, raw_r_detail,
-            market_structure, 
-            min_rr_ratio=1.5
-        )
-        
-        if trade_recommendation:
-            for key, value in trade_recommendation.items():
-                print(f"  - {key}: {value}")
+        input("\nPress Enter to search another stock...")
 
 if __name__ == "__main__":
     main()
