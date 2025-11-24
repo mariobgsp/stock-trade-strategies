@@ -1,13 +1,16 @@
 name: Auto-Run Stock Analysis
 
-# Trigger on push to main or manual dispatch
+# Trigger on push to 'run-analysis' branch OR manual dispatch
+# I kept 'main' just in case you do a final merge, but you can remove it if you want isolation.
 on:
   push:
-    branches: [ "main" ]
+    branches: 
+      - "run-analysis"  # <--- PUSH HERE TO TRIGGER WITHOUT MERGING
+      - "main"
     paths:
-      - '**.py'             # Run if python files change
-      - 'requirements.txt'   # Run if dependencies change
-      - '.github/workflows/**' # Run if this file changes
+      - '**.py'             
+      - 'requirements.txt'   
+      - '.github/workflows/**' 
   workflow_dispatch:
 
 jobs:
@@ -35,6 +38,5 @@ jobs:
       run: python main.py BBCA
 
     # 5. TEST 2: Custom Analysis (Testing New Flags)
-    # This verifies that your new argparse logic works correctly
-    - name: Analyze ELSA (Swing Mode Test)
-      run: python main.py ELSA --period 2y --sl 1 --tp 3.0 --hold 20
+    - name: Analyze GOTO (Scalper Mode Test)
+      run: python main.py GOTO --period 6mo --sl 1.5 --tp 2.0 --hold 5
