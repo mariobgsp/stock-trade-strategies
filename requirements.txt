@@ -1,8 +1,8 @@
 yfinance
 pandas
-numpy
-pandas_ta
+numpy<2.0.0
+pandas-ta
 textblob
-GoogleNews
 requests
 beautifulsoup4
+lxml
