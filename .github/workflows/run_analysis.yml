@@ -32,5 +32,5 @@ jobs:
     # - name: Analyze BBCA (Standard)
     #   run: python main.py BBCA
 
-    - name: Analyze Some Stock (Custom Flag Test)
-      run: python main.py SIMP --period 2y --sl 3.0 --tp 6.0 --fib 60 --hold 20
+    - name: Analyze Stock (Custom Flag Test)
+      run: python main.py MBMA --period 2y --sl 3.0 --tp 6.0 --fib 60 --hold 20
