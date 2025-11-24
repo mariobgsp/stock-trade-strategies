@@ -1,6 +1,5 @@
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 import numpy as np
 import time
 import random
@@ -10,7 +9,7 @@ from textblob import TextBlob
 from datetime import datetime, timedelta
 
 # ==========================================
-# 1. DEFAULT CONFIGURATION (DEFAULTS)
+# 1. DEFAULT CONFIGURATION
 # ==========================================
 DEFAULT_CONFIG = {
     "BACKTEST_PERIOD": "2y",
@@ -21,7 +20,6 @@ DEFAULT_CONFIG = {
     "ATR_PERIOD": 14,
     "SL_MULTIPLIER": 2.0,
     "TP_MULTIPLIER": 3.0,
-    # Smart Money Defaults
     "CMF_PERIOD": 20,
     "MFI_PERIOD": 14,
     "VOL_MA_PERIOD": 20
@@ -55,11 +53,17 @@ class StockAnalyzer:
     def fetch_data(self):
         try:
             period = self.config["BACKTEST_PERIOD"]
+            # Auto adjust OHLC data
             self.df = yf.download(self.ticker, period=period, progress=False, auto_adjust=True)
+            
             if self.df.empty: return False
+            
+            # Handle MultiIndex columns from yfinance
             if isinstance(self.df.columns, pd.MultiIndex):
                 self.df.columns = self.df.columns.get_level_values(0)
+            
             self.data_len = len(self.df)
+
             ticker_obj = yf.Ticker(self.ticker)
             try:
                 self.info = ticker_obj.info
@@ -96,7 +100,7 @@ class StockAnalyzer:
                         for item in items[:5]:
                             title = item.find('title').text
                             headlines.append(title)
-                except Exception as e: print(f"RSS Fallback Error: {e}")
+                except Exception: pass
 
             if not headlines:
                 self.news_analysis = {"sentiment": "Neutral", "score": 0, "headlines": []}
@@ -118,39 +122,95 @@ class StockAnalyzer:
         except Exception as e:
             self.news_analysis = {"sentiment": "Error", "score": 0, "headlines": [str(e)]}
 
+    # --- MANUAL INDICATOR CALCULATIONS (No pandas_ta dependency) ---
+    
+    def calc_rsi(self, series, period):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+
+    def calc_ema(self, series, period):
+        return series.ewm(span=period, adjust=False).mean()
+
+    def calc_stoch(self, high, low, close, k_period, d_period):
+        lowest_low = low.rolling(window=k_period).min()
+        highest_high = high.rolling(window=k_period).max()
+        k = 100 * ((close - lowest_low) / (highest_high - lowest_low))
+        d = k.rolling(window=d_period).mean()
+        return k, d
+
+    def calc_atr(self, high, low, close, period):
+        # TR = Max(H-L, |H-Cp|, |L-Cp|)
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        return tr.rolling(window=period).mean() # Simple ATR
+
+    def calc_obv(self, close, volume):
+        obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
+        return obv
+
+    def calc_mfi(self, high, low, close, volume, period):
+        typical_price = (high + low + close) / 3
+        raw_money_flow = typical_price * volume
+        
+        positive_flow = raw_money_flow.where(typical_price > typical_price.shift(1), 0)
+        negative_flow = raw_money_flow.where(typical_price < typical_price.shift(1), 0)
+        
+        mf_ratio = positive_flow.rolling(window=period).sum() / negative_flow.rolling(window=period).sum()
+        return 100 - (100 / (1 + mf_ratio))
+
+    def calc_cmf(self, high, low, close, volume, period):
+        mf_multiplier = ((close - low) - (high - close)) / (high - low)
+        mf_volume = mf_multiplier * volume
+        return mf_volume.rolling(window=period).sum() / volume.rolling(window=period).sum()
+
     def prepare_indicators(self):
         if self.df is None or self.df.empty: return
+
+        # 1. Adaptive Trend (EMA)
         if self.data_len >= 200:
-            self.df['EMA_200'] = ta.ema(self.df['Close'], length=200)
+            self.df['EMA_200'] = self.calc_ema(self.df['Close'], 200)
             self.active_trend_col = 'EMA_200'
         elif self.data_len >= 50:
-            self.df['EMA_50'] = ta.ema(self.df['Close'], length=50)
+            self.df['EMA_50'] = self.calc_ema(self.df['Close'], 50)
             self.active_trend_col = 'EMA_50'
         else:
-            self.df['EMA_20'] = ta.ema(self.df['Close'], length=20)
+            self.df['EMA_20'] = self.calc_ema(self.df['Close'], 20)
             self.active_trend_col = 'EMA_20'
 
+        # 2. Oscillators
         rsi_p = self.config["RSI_PERIOD"]
         if self.data_len > rsi_p:
-            self.df['RSI'] = ta.rsi(self.df['Close'], length=rsi_p)
-            stoch = ta.stoch(self.df['High'], self.df['Low'], self.df['Close'], k=STOCH_K_PERIOD, d=STOCH_D_PERIOD)
-            self.df = pd.concat([self.df, stoch], axis=1)
+            self.df['RSI'] = self.calc_rsi(self.df['Close'], rsi_p)
+            
+            # Stochastic
+            k, d = self.calc_stoch(self.df['High'], self.df['Low'], self.df['Close'], STOCH_K_PERIOD, STOCH_D_PERIOD)
+            self.df[f"STOCHk"] = k
+            self.df[f"STOCHd"] = d
 
+        # 3. MA Cross
         for fast, slow in MA_TEST_PAIRS:
             if self.data_len > slow:
-                self.df[f'EMA_{fast}'] = ta.ema(self.df['Close'], length=fast)
-                self.df[f'EMA_{slow}'] = ta.ema(self.df['Close'], length=slow)
+                self.df[f'EMA_{fast}'] = self.calc_ema(self.df['Close'], fast)
+                self.df[f'EMA_{slow}'] = self.calc_ema(self.df['Close'], slow)
 
-        # Dynamic Smart Money Parameters
+        # 4. Volume & Smart Money
         cmf_p = self.config["CMF_PERIOD"]
         mfi_p = self.config["MFI_PERIOD"]
         vol_p = self.config["VOL_MA_PERIOD"]
         
-        self.df['OBV'] = ta.obv(self.df['Close'], self.df['Volume'])
-        self.df['CMF'] = ta.cmf(self.df['High'], self.df['Low'], self.df['Close'], self.df['Volume'], length=cmf_p)
-        self.df['MFI'] = ta.mfi(self.df['High'], self.df['Low'], self.df['Close'], self.df['Volume'], length=mfi_p)
-        self.df['VOL_MA'] = ta.sma(self.df['Volume'], length=vol_p)
-        self.df['ATR'] = ta.atr(self.df['High'], self.df['Low'], self.df['Close'], length=self.config["ATR_PERIOD"])
+        self.df['OBV'] = self.calc_obv(self.df['Close'], self.df['Volume'])
+        self.df['CMF'] = self.calc_cmf(self.df['High'], self.df['Low'], self.df['Close'], self.df['Volume'], cmf_p)
+        self.df['MFI'] = self.calc_mfi(self.df['High'], self.df['Low'], self.df['Close'], self.df['Volume'], mfi_p)
+        self.df['VOL_MA'] = self.df['Volume'].rolling(window=vol_p).mean()
+
+        # 5. ATR
+        atr_p = self.config["ATR_PERIOD"]
+        self.df['ATR'] = self.calc_atr(self.df['High'], self.df['Low'], self.df['Close'], atr_p)
 
     def run_backtest_simulation(self, condition_series, hold_days):
         if condition_series is None: return 0.0 
@@ -187,13 +247,12 @@ class StockAnalyzer:
                     if wr > best_ma['win_rate']:
                         best_ma = {"strategy": "MA Momentum", "details": f"Uptrend (EMA {fast} > EMA {slow})", "win_rate": wr, "hold_days": days, "is_triggered_today": self.df[fast_col].iloc[-1] > self.df[slow_col].iloc[-1]}
 
-        k_col, d_col = f"STOCHk_{STOCH_K_PERIOD}_{STOCH_D_PERIOD}_{STOCH_D_PERIOD}", f"STOCHd_{STOCH_K_PERIOD}_{STOCH_D_PERIOD}_{STOCH_D_PERIOD}"
-        if k_col in self.df.columns:
-            condition = (self.df[k_col] < STOCH_OVERSOLD) & (self.df[k_col] > self.df[d_col])
+        if 'STOCHk' in self.df.columns:
+            condition = (self.df['STOCHk'] < STOCH_OVERSOLD) & (self.df['STOCHk'] > self.df['STOCHd'])
             for days in range(1, max_hold + 1):
                 wr = self.run_backtest_simulation(condition, days)
                 if wr > best_stoch['win_rate']:
-                    best_stoch = {"strategy": "Stoch Reversal", "details": f"Stoch K < {STOCH_OVERSOLD}", "win_rate": wr, "hold_days": days, "is_triggered_today": (self.df[k_col].iloc[-1] < STOCH_OVERSOLD) & (self.df[k_col].iloc[-1] > self.df[d_col].iloc[-1])}
+                    best_stoch = {"strategy": "Stoch Reversal", "details": f"Stoch K < {STOCH_OVERSOLD}", "win_rate": wr, "hold_days": days, "is_triggered_today": (self.df['STOCHk'].iloc[-1] < STOCH_OVERSOLD) & (self.df['STOCHk'].iloc[-1] > self.df['STOCHd'].iloc[-1])}
 
         all_strats = [s for s in [best_rsi, best_ma, best_stoch] if s['win_rate'] > 0]
         all_strats.sort(key=lambda x: x['win_rate'], reverse=True)

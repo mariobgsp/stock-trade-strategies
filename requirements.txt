@@ -1,7 +1,6 @@
 yfinance
-pandas==2.0.3
-numpy<2.0.0
-pandas-ta
+pandas
+numpy
 textblob
 requests
 beautifulsoup4
