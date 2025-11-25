@@ -24,14 +24,42 @@ def print_report(data):
     
     if data['is_ipo']:
         print(f"[!] WARNING: IPO DETECTED ({data['days_listed']} days listed)")
-    
-    # 2. THE BIG ACTION
-    print("\n" + "*"*40)
-    print(f"  {data['action']}")
-    print("*"*40)
-    print(f"Logic: {data['trigger']}")
 
-    # 3. CHART PATTERNS
+    # 2. VALIDATION SCORE (Moved Up)
+    val = data['validation']
+    stars = "⭐" * val['score']
+    print(f"\n--- CONFLUENCE SCORE: {val['score']}/5 {stars} ---")
+    print(f"Verdict: {val['verdict']}")
+    if val['reasons']:
+        print(f"Factors: {', '.join(val['reasons'])}")
+    else:
+        print("Factors: None (Weak Setup)")
+
+    # 3. DUAL TRADE PLANS (Replaces the old "Big Action")
+    for plan in data['plans']:
+        p_name = "⚡ SHORT TERM (1-5 Days)" if plan['type'] == "SHORT_TERM" else "🌊 SWING TERM (>5 Days)"
+        print(f"\n{p_name}")
+        
+        # Determine color/emphasis based on status
+        status_display = plan['status']
+        if "EXECUTE" in status_display:
+            status_display = f"!!! {status_display} !!!"
+            
+        print(f"Status:      {status_display}")
+        
+        if "PENDING" in plan['status']:
+             print(f"Note:        {plan.get('note', '')}")
+             print(f"WAIT FOR:    Rp {plan['entry']:,.0f}")
+        else:
+             print(f"ENTRY:       Rp {plan['entry']:,.0f}")
+        
+        if plan['entry'] > 0:
+            sl_pct = ((plan['stop_loss'] - plan['entry']) / plan['entry']) * 100
+            tp_pct = ((plan['take_profit'] - plan['entry']) / plan['entry']) * 100
+            print(f"STOP LOSS:   Rp {plan['stop_loss']:,.0f} ({sl_pct:.1f}%)")
+            print(f"TAKE PROFIT: Rp {plan['take_profit']:,.0f} (+{tp_pct:.1f}%)")
+
+    # 4. CHART PATTERNS
     print(f"\n--- CHART & CANDLE PATTERNS ---")
     
     candle = data['context'].get('candle', {})
@@ -49,23 +77,6 @@ def print_report(data):
     if geo.get('pattern') != "None":
         print(f"[+] GEOMETRY: {geo['pattern']}")
         print(f"    {geo['msg']}")
-
-    # 4. SMART TRADE PLAN
-    for plan in data['plans']:
-        p_name = "⚡ SHORT TERM (1-5 Days)" if plan['type'] == "SHORT_TERM" else "🌊 SWING TERM (>5 Days)"
-        print(f"\n{p_name}")
-        print(f"Status:      {plan['status']}")
-        if "PENDING" in plan['status']:
-             print(f"Note:        {plan.get('note', '')}")
-             print(f"WAIT FOR:    Rp {plan['entry']:,.0f}")
-        else:
-             print(f"ENTRY:       Rp {plan['entry']:,.0f}")
-        
-        if plan['entry'] > 0:
-            sl_pct = ((plan['stop_loss'] - plan['entry']) / plan['entry']) * 100
-            tp_pct = ((plan['take_profit'] - plan['entry']) / plan['entry']) * 100
-            print(f"STOP LOSS:   Rp {plan['stop_loss']:,.0f} ({sl_pct:.1f}%)")
-            print(f"TAKE PROFIT: Rp {plan['take_profit']:,.0f} (+{tp_pct:.1f}%)")
 
     # 5. NEWS SENTIMENT
     print(f"\n--- NEWS SENTIMENT ---")
@@ -103,16 +114,6 @@ def print_report(data):
         print(f"0.618 GOLDEN:    Rp {fibs.get('0.618 (Golden)', 0):,.0f} {get_fib_label(fibs.get('0.618 (Golden)', 0))}")
         print(f"Low (1.0):       Rp {fibs.get('1.0 (Low)', 0):,.0f} {get_fib_label(fibs.get('1.0 (Low)', 0))}")
 
-    # 8. VALIDATION SCORE
-    val = data['validation']
-    stars = "⭐" * val['score']
-    print(f"\n--- CONFLUENCE SCORE: {val['score']}/5 {stars} ---")
-    print(f"Verdict: {val['verdict']}")
-    if val['reasons']:
-        print(f"Factors: {', '.join(val['reasons'])}")
-    else:
-        print("Factors: None (Weak Setup)")
-
     print("\n" + "="*60)
 
 def main():
@@ -125,7 +126,7 @@ def main():
     parser.add_argument('--sl', type=float, default=DEFAULT_CONFIG['SL_MULTIPLIER'], help='Stop Loss ATR Multiplier')
     parser.add_argument('--tp', type=float, default=DEFAULT_CONFIG['TP_MULTIPLIER'], help='Take Profit ATR Multiplier')
     
-    # THESE WERE MISSING IN YOUR OLD VERSION causing the error:
+    # Argument Flags
     parser.add_argument('--fib', type=int, default=DEFAULT_CONFIG['FIB_LOOKBACK_DAYS'], help='Fibonacci Lookback Days')
     parser.add_argument('--cmf', type=int, default=DEFAULT_CONFIG['CMF_PERIOD'], help='CMF Period')
     parser.add_argument('--mfi', type=int, default=DEFAULT_CONFIG['MFI_PERIOD'], help='MFI Period')
