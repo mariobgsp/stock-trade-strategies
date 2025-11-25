@@ -33,4 +33,10 @@ jobs:
     #   run: python main.py BBCA
 
     - name: Analyze Stock (Custom Flag Test)
-      run: python main.py MBMA --period 5y --sl 1.0 --tp 6.0 --fib 60 --cmf 10 --mfi 10
+      run: python main.py ADRO --period 5y --sl 3.0 --tp 9.0 --fib 60 --cmf 10 --mfi 10
+ 
+    - name: Analyze Stock 2
+    - run: python main.py ADMR --period 5y --sl 3.0 --tp 9.0 --fib 60 --cmf 10 --mfi 10
+
+
+
