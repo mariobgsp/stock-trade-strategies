@@ -322,7 +322,10 @@ class StockAnalyzer:
     def detect_candle_patterns(self):
         """
         Detects Last Candle Patterns: 
-        Hammer, Hanging Man, Morning Star, Three White Soldiers (Musketeers)
+        Hammer, Inverted Hammer, Shooting Star, Hanging Man,
+        Bullish/Bearish Engulfing, Morning/Evening Star,
+        Three White Soldiers/Black Crows, Piercing/Dark Cloud,
+        Doji, Marubozu.
         """
         res = {"pattern": "None", "sentiment": "Neutral"}
         try:
@@ -333,49 +336,80 @@ class StockAnalyzer:
             
             # Calc Candle Basics
             df['Body'] = abs(df['Close'] - df['Open'])
+            df['BodyAvg'] = df['Body'].rolling(window=10).mean() # Approximation using recent data
+            df['TotalRange'] = df['High'] - df['Low']
             df['UpperShadow'] = df['High'] - df[['Open', 'Close']].max(axis=1)
             df['LowerShadow'] = df[['Open', 'Close']].min(axis=1) - df['Low']
             df['IsGreen'] = df['Close'] > df['Open']
+            df['IsRed'] = df['Close'] < df['Open']
             
             # Latest Candle
             c0 = df.iloc[-1] # Today
             c1 = df.iloc[-2] # Yesterday
             c2 = df.iloc[-3] # 2 days ago
             
-            # 1. HAMMER (Bullish Reversal)
-            # Long lower shadow (> 2x body), small upper shadow, downtrend context
-            is_hammer = (c0['LowerShadow'] > 2 * c0['Body']) and \
-                        (c0['UpperShadow'] < 0.5 * c0['Body'])
+            avg_body = c0['BodyAvg'] if not np.isnan(c0['BodyAvg']) else c0['Body']
             
-            # 2. HANGING MAN (Bearish Reversal)
-            # Same shape as hammer, but appears at top of trend
-            # Simplified check: Look at recent movement
-            recent_move = self.df['Close'].iloc[-1] - self.df['Close'].iloc[-5]
+            # --- SINGLE CANDLE PATTERNS ---
             
-            if is_hammer:
-                if recent_move < 0:
-                    res = {"pattern": "Hammer", "sentiment": "Bullish Reversal"}
-                else:
-                    res = {"pattern": "Hanging Man", "sentiment": "Bearish Reversal"}
+            # Doji (Indecision)
+            is_doji = c0['Body'] <= (0.1 * c0['TotalRange'])
             
-            # 3. THREE WHITE SOLDIERS (Three Musketeers)
-            # 3 consecutive greens, closing higher
-            if c0['IsGreen'] and c1['IsGreen'] and c2['IsGreen']:
-                if c0['Close'] > c1['Close'] > c2['Close']:
-                    # Check if bodies are decent size (not dojis)
-                    avg_body = df['Body'].mean()
-                    if c0['Body'] > 0.5 * avg_body:
-                        res = {"pattern": "Three White Soldiers", "sentiment": "Strong Bullish Momentum"}
+            # Marubozu (Strong Trend)
+            is_marubozu = (c0['Body'] > 2 * avg_body) and \
+                          (c0['UpperShadow'] < 0.1 * c0['Body']) and \
+                          (c0['LowerShadow'] < 0.1 * c0['Body'])
 
-            # 4. MORNING STAR (Bullish Reversal)
-            # Down candle, small gap/doji, Up candle
-            is_c2_red = not c2['IsGreen']
-            is_c1_small = c1['Body'] < (0.5 * c2['Body']) # Star
-            is_c0_green = c0['IsGreen']
-            is_c0_piercing = c0['Close'] > (c2['Open'] + c2['Close']) / 2 # Closed > 50% of C2 body
+            # Hammer / Hanging Man Shape
+            is_hammer_shape = (c0['LowerShadow'] > 2 * c0['Body']) and (c0['UpperShadow'] < 0.5 * c0['Body'])
             
-            if is_c2_red and is_c1_small and is_c0_green and is_c0_piercing:
-                 res = {"pattern": "Morning Star", "sentiment": "Major Bullish Reversal"}
+            # Inverted Hammer / Shooting Star Shape
+            is_inverted_shape = (c0['UpperShadow'] > 2 * c0['Body']) and (c0['LowerShadow'] < 0.5 * c0['Body'])
+
+            # Context (Simplified trend check)
+            recent_move = self.df['Close'].iloc[-1] - self.df['Close'].iloc[-5]
+            is_uptrend = recent_move > 0
+            is_downtrend = recent_move < 0
+
+            # --- MULTI CANDLE PATTERNS (Prioritized) ---
+
+            # 1. Engulfing
+            if c1['IsRed'] and c0['IsGreen'] and (c0['Close'] > c1['Open']) and (c0['Open'] < c1['Close']):
+                res = {"pattern": "Bullish Engulfing", "sentiment": "Strong Reversal Up"}
+            elif c1['IsGreen'] and c0['IsRed'] and (c0['Close'] < c1['Open']) and (c0['Open'] > c1['Close']):
+                res = {"pattern": "Bearish Engulfing", "sentiment": "Strong Reversal Down"}
+            
+            # 2. Morning Star / Evening Star
+            elif is_downtrend and c2['IsRed'] and (c1['Body'] < 0.5 * c2['Body']) and c0['IsGreen'] and (c0['Close'] > (c2['Open'] + c2['Close'])/2):
+                res = {"pattern": "Morning Star", "sentiment": "Major Bullish Reversal"}
+            elif is_uptrend and c2['IsGreen'] and (c1['Body'] < 0.5 * c2['Body']) and c0['IsRed'] and (c0['Close'] < (c2['Open'] + c2['Close'])/2):
+                res = {"pattern": "Evening Star", "sentiment": "Major Bearish Reversal"}
+
+            # 3. Three White Soldiers / Black Crows
+            elif c0['IsGreen'] and c1['IsGreen'] and c2['IsGreen'] and (c0['Close'] > c1['Close'] > c2['Close']):
+                res = {"pattern": "Three White Soldiers", "sentiment": "Strong Bullish Momentum"}
+            elif c0['IsRed'] and c1['IsRed'] and c2['IsRed'] and (c0['Close'] < c1['Close'] < c2['Close']):
+                res = {"pattern": "Three Black Crows", "sentiment": "Strong Bearish Momentum"}
+
+            # 4. Piercing Line / Dark Cloud Cover
+            elif c1['IsRed'] and c0['IsGreen'] and (c0['Open'] < c1['Low']) and (c0['Close'] > (c1['Open'] + c1['Close'])/2):
+                res = {"pattern": "Piercing Line", "sentiment": "Bullish Reversal"}
+            elif c1['IsGreen'] and c0['IsRed'] and (c0['Open'] > c1['High']) and (c0['Close'] < (c1['Open'] + c1['Close'])/2):
+                res = {"pattern": "Dark Cloud Cover", "sentiment": "Bearish Reversal"}
+
+            # --- FALLBACK TO SINGLE CANDLE ---
+            elif res["pattern"] == "None":
+                if is_hammer_shape:
+                    if is_downtrend: res = {"pattern": "Hammer", "sentiment": "Bullish Reversal"}
+                    elif is_uptrend: res = {"pattern": "Hanging Man", "sentiment": "Bearish Warning"}
+                elif is_inverted_shape:
+                    if is_downtrend: res = {"pattern": "Inverted Hammer", "sentiment": "Potential Bottom"}
+                    elif is_uptrend: res = {"pattern": "Shooting Star", "sentiment": "Bearish Reversal"}
+                elif is_marubozu:
+                    if c0['IsGreen']: res = {"pattern": "Bullish Marubozu", "sentiment": "Strong Buying"}
+                    else: res = {"pattern": "Bearish Marubozu", "sentiment": "Strong Selling"}
+                elif is_doji:
+                    res = {"pattern": "Doji", "sentiment": "Indecision"}
 
         except Exception: pass
         return res
@@ -433,7 +467,7 @@ class StockAnalyzer:
             "atr": atr, "obv_status": obv_status, "smart_money": money_flow,
             "vcp": self.detect_vcp_pattern(), 
             "geo": self.detect_geometric_patterns(),
-            "candle": candle_pat # New Key
+            "candle": candle_pat
         }
 
     def calculate_trade_plan(self, action, current_price, atr, support, resistance, best_strategy, fib_levels):
@@ -515,9 +549,8 @@ class StockAnalyzer:
              trigger_msg += " [Blocked by News]"
 
         # Candlestick Override (Strong Reversal)
-        # If Action is WAIT but we see a HAMMER or Morning Star at support, consider BUY
-        if action == "WAIT" and ctx['candle']['pattern'] in ["Hammer", "Morning Star", "Three White Soldiers"]:
-             if ctx['dist_support'] < 5.0: # Valid only near support
+        if action == "WAIT" and ctx['candle']['pattern'] in ["Hammer", "Morning Star", "Three White Soldiers", "Bullish Engulfing", "Piercing Line", "Bullish Marubozu"]:
+             if ctx['dist_support'] < 5.0: 
                  action = "ACTION: BUY (Reversal Pattern)"
                  trigger_msg = f"Pattern: {ctx['candle']['pattern']} near Support"
              else:
