@@ -18,6 +18,7 @@ DEFAULT_CONFIG = {
     "RSI_PERIOD": 14,
     "RSI_LOWER": 30,
     "ATR_PERIOD": 14,
+    # Base Multipliers (Will be adjusted for Short/Swing)
     "SL_MULTIPLIER": 2.0,
     "TP_MULTIPLIER": 3.0,
     "CMF_PERIOD": 20,
@@ -35,7 +36,9 @@ TREND_EMA_DEFAULT = 200
 class StockAnalyzer:
     def __init__(self, ticker, user_config=None):
         self.ticker = self._format_ticker(ticker)
+        self.market_ticker = "^JKSE" # IHSG Index
         self.df = None
+        self.market_df = None
         self.info = {}
         self.news_analysis = {"sentiment": "Neutral", "score": 0, "headlines": []}
         self.active_trend_col = f"EMA_{TREND_EMA_DEFAULT}"
@@ -46,15 +49,24 @@ class StockAnalyzer:
 
     def _format_ticker(self, ticker):
         ticker = ticker.upper().strip()
-        if not ticker.endswith(".JK"):
+        if not ticker.endswith(".JK") and not ticker.startswith("^"):
             ticker += ".JK"
         return ticker
 
     def fetch_data(self):
         try:
             period = self.config["BACKTEST_PERIOD"]
+            # 1. Fetch Stock Data
             self.df = yf.download(self.ticker, period=period, progress=False, auto_adjust=True)
             
+            # 2. Fetch Market Data (IHSG) for Relative Strength
+            try:
+                self.market_df = yf.download(self.market_ticker, period=period, progress=False, auto_adjust=True)
+                if isinstance(self.market_df.columns, pd.MultiIndex):
+                    self.market_df.columns = self.market_df.columns.get_level_values(0)
+            except:
+                self.market_df = None
+
             if self.df.empty: return False
             
             if isinstance(self.df.columns, pd.MultiIndex):
@@ -200,10 +212,11 @@ class StockAnalyzer:
         self.df['CMF'] = self.calc_cmf(self.df['High'], self.df['Low'], self.df['Close'], self.df['Volume'], cmf_p)
         self.df['MFI'] = self.calc_mfi(self.df['High'], self.df['Low'], self.df['Close'], self.df['Volume'], mfi_p)
         self.df['VOL_MA'] = self.df['Volume'].rolling(window=vol_p).mean()
-
-        # 5. ATR
+        
+        # 5. ATR & Relative Volume (RVOL)
         atr_p = self.config["ATR_PERIOD"]
         self.df['ATR'] = self.calc_atr(self.df['High'], self.df['Low'], self.df['Close'], atr_p)
+        self.df['RVOL'] = self.df['Volume'] / self.df['VOL_MA']
 
     def run_backtest_simulation(self, condition_series, hold_days):
         if condition_series is None: return 0.0 
@@ -216,41 +229,37 @@ class StockAnalyzer:
         if trade_returns.empty: return 0.0
         return ((trade_returns > 0).sum() / len(trade_returns)) * 100
 
-    def optimize_stock(self):
-        best_rsi = {"strategy": "RSI Reversal", "win_rate": 0, "details": "N/A", "hold_days": 0, "is_triggered_today": False}
-        best_ma = {"strategy": "MA Momentum", "win_rate": 0, "details": "N/A", "hold_days": 0, "is_triggered_today": False}
-        best_stoch = {"strategy": "Stoch Reversal", "win_rate": 0, "details": "N/A", "hold_days": 0, "is_triggered_today": False}
-        max_hold = self.config["MAX_HOLD_DAYS"]
+    def optimize_stock(self, days_min, days_max):
+        """Optimizes strategies for a specific timeframe (Short vs Swing)."""
+        best_res = {"strategy": None, "win_rate": -1, "details": "N/A", "hold_days": 0, "is_triggered_today": False}
+        
         rsi_levels = [self.config["RSI_LOWER"], self.config["RSI_LOWER"] + 10]
 
         if 'RSI' in self.df.columns:
             for level in rsi_levels:
                 condition = self.df['RSI'] < level
-                for days in range(1, max_hold + 1):
+                for days in range(days_min, days_max + 1):
                     wr = self.run_backtest_simulation(condition, days)
-                    if wr > best_rsi['win_rate']:
-                        best_rsi = {"strategy": "RSI Reversal", "details": f"RSI < {level}", "win_rate": wr, "hold_days": days, "is_triggered_today": self.df['RSI'].iloc[-1] < level}
+                    if wr > best_res['win_rate']:
+                        best_res = {"strategy": "RSI Reversal", "details": f"RSI < {level}", "win_rate": wr, "hold_days": days, "is_triggered_today": self.df['RSI'].iloc[-1] < level}
 
         for fast, slow in MA_TEST_PAIRS:
             fast_col, slow_col = f'EMA_{fast}', f'EMA_{slow}'
             if fast_col in self.df.columns and slow_col in self.df.columns:
                 condition = self.df[fast_col] > self.df[slow_col]
-                for days in range(1, max_hold + 1):
+                for days in range(days_min, days_max + 1):
                     wr = self.run_backtest_simulation(condition, days)
-                    if wr > best_ma['win_rate']:
-                        best_ma = {"strategy": "MA Momentum", "details": f"Uptrend (EMA {fast} > EMA {slow})", "win_rate": wr, "hold_days": days, "is_triggered_today": self.df[fast_col].iloc[-1] > self.df[slow_col].iloc[-1]}
+                    if wr > best_res['win_rate']:
+                        best_res = {"strategy": "MA Momentum", "details": f"Uptrend (EMA {fast} > EMA {slow})", "win_rate": wr, "hold_days": days, "is_triggered_today": self.df[fast_col].iloc[-1] > self.df[slow_col].iloc[-1]}
 
         if 'STOCHk' in self.df.columns:
             condition = (self.df['STOCHk'] < STOCH_OVERSOLD) & (self.df['STOCHk'] > self.df['STOCHd'])
-            for days in range(1, max_hold + 1):
+            for days in range(days_min, days_max + 1):
                 wr = self.run_backtest_simulation(condition, days)
-                if wr > best_stoch['win_rate']:
-                    best_stoch = {"strategy": "Stoch Reversal", "details": f"Stoch K < {STOCH_OVERSOLD}", "win_rate": wr, "hold_days": days, "is_triggered_today": (self.df['STOCHk'].iloc[-1] < STOCH_OVERSOLD) & (self.df['STOCHk'].iloc[-1] > self.df['STOCHd'].iloc[-1])}
+                if wr > best_res['win_rate']:
+                    best_res = {"strategy": "Stoch Reversal", "details": f"Stoch K < {STOCH_OVERSOLD}", "win_rate": wr, "hold_days": days, "is_triggered_today": (self.df['STOCHk'].iloc[-1] < STOCH_OVERSOLD) & (self.df['STOCHk'].iloc[-1] > self.df['STOCHd'].iloc[-1])}
 
-        all_strats = [s for s in [best_rsi, best_ma, best_stoch] if s['win_rate'] > 0]
-        all_strats.sort(key=lambda x: x['win_rate'], reverse=True)
-        if not all_strats: return [{"strategy": "None", "win_rate": 0, "details": "No profitable strategy found", "hold_days": 0, "is_triggered_today": False}]
-        return all_strats
+        return best_res
 
     def detect_vcp_pattern(self):
         try:
@@ -320,84 +329,33 @@ class StockAnalyzer:
         return result
 
     def detect_candle_patterns(self):
-        """
-        Detects Last Candle Patterns: 
-        Hammer, Inverted Hammer, Shooting Star, Hanging Man,
-        Bullish/Bearish Engulfing, Morning/Evening Star,
-        Three White Soldiers/Black Crows, Piercing/Dark Cloud,
-        Doji, Marubozu.
-        """
         res = {"pattern": "None", "sentiment": "Neutral"}
         try:
             if self.data_len < 4: return res
-            
-            # Get last few rows
             df = self.df.iloc[-4:].copy()
-            
-            # Calc Candle Basics
             df['Body'] = abs(df['Close'] - df['Open'])
-            df['BodyAvg'] = df['Body'].rolling(window=10).mean() # Approximation using recent data
+            df['BodyAvg'] = df['Body'].rolling(window=10).mean()
             df['TotalRange'] = df['High'] - df['Low']
             df['UpperShadow'] = df['High'] - df[['Open', 'Close']].max(axis=1)
             df['LowerShadow'] = df[['Open', 'Close']].min(axis=1) - df['Low']
             df['IsGreen'] = df['Close'] > df['Open']
             df['IsRed'] = df['Close'] < df['Open']
             
-            # Latest Candle
-            c0 = df.iloc[-1] # Today
-            c1 = df.iloc[-2] # Yesterday
-            c2 = df.iloc[-3] # 2 days ago
-            
+            c0, c1, c2 = df.iloc[-1], df.iloc[-2], df.iloc[-3]
             avg_body = c0['BodyAvg'] if not np.isnan(c0['BodyAvg']) else c0['Body']
             
-            # --- SINGLE CANDLE PATTERNS ---
-            
-            # Doji (Indecision)
             is_doji = c0['Body'] <= (0.1 * c0['TotalRange'])
-            
-            # Marubozu (Strong Trend)
-            is_marubozu = (c0['Body'] > 2 * avg_body) and \
-                          (c0['UpperShadow'] < 0.1 * c0['Body']) and \
-                          (c0['LowerShadow'] < 0.1 * c0['Body'])
-
-            # Hammer / Hanging Man Shape
+            is_marubozu = (c0['Body'] > 2 * avg_body) and (c0['UpperShadow'] < 0.1 * c0['Body'])
             is_hammer_shape = (c0['LowerShadow'] > 2 * c0['Body']) and (c0['UpperShadow'] < 0.5 * c0['Body'])
-            
-            # Inverted Hammer / Shooting Star Shape
             is_inverted_shape = (c0['UpperShadow'] > 2 * c0['Body']) and (c0['LowerShadow'] < 0.5 * c0['Body'])
-
-            # Context (Simplified trend check)
             recent_move = self.df['Close'].iloc[-1] - self.df['Close'].iloc[-5]
-            is_uptrend = recent_move > 0
-            is_downtrend = recent_move < 0
+            is_uptrend, is_downtrend = recent_move > 0, recent_move < 0
 
-            # --- MULTI CANDLE PATTERNS (Prioritized) ---
-
-            # 1. Engulfing
-            if c1['IsRed'] and c0['IsGreen'] and (c0['Close'] > c1['Open']) and (c0['Open'] < c1['Close']):
-                res = {"pattern": "Bullish Engulfing", "sentiment": "Strong Reversal Up"}
-            elif c1['IsGreen'] and c0['IsRed'] and (c0['Close'] < c1['Open']) and (c0['Open'] > c1['Close']):
-                res = {"pattern": "Bearish Engulfing", "sentiment": "Strong Reversal Down"}
-            
-            # 2. Morning Star / Evening Star
-            elif is_downtrend and c2['IsRed'] and (c1['Body'] < 0.5 * c2['Body']) and c0['IsGreen'] and (c0['Close'] > (c2['Open'] + c2['Close'])/2):
-                res = {"pattern": "Morning Star", "sentiment": "Major Bullish Reversal"}
-            elif is_uptrend and c2['IsGreen'] and (c1['Body'] < 0.5 * c2['Body']) and c0['IsRed'] and (c0['Close'] < (c2['Open'] + c2['Close'])/2):
-                res = {"pattern": "Evening Star", "sentiment": "Major Bearish Reversal"}
-
-            # 3. Three White Soldiers / Black Crows
-            elif c0['IsGreen'] and c1['IsGreen'] and c2['IsGreen'] and (c0['Close'] > c1['Close'] > c2['Close']):
-                res = {"pattern": "Three White Soldiers", "sentiment": "Strong Bullish Momentum"}
-            elif c0['IsRed'] and c1['IsRed'] and c2['IsRed'] and (c0['Close'] < c1['Close'] < c2['Close']):
-                res = {"pattern": "Three Black Crows", "sentiment": "Strong Bearish Momentum"}
-
-            # 4. Piercing Line / Dark Cloud Cover
-            elif c1['IsRed'] and c0['IsGreen'] and (c0['Open'] < c1['Low']) and (c0['Close'] > (c1['Open'] + c1['Close'])/2):
-                res = {"pattern": "Piercing Line", "sentiment": "Bullish Reversal"}
-            elif c1['IsGreen'] and c0['IsRed'] and (c0['Open'] > c1['High']) and (c0['Close'] < (c1['Open'] + c1['Close'])/2):
-                res = {"pattern": "Dark Cloud Cover", "sentiment": "Bearish Reversal"}
-
-            # --- FALLBACK TO SINGLE CANDLE ---
+            if c1['IsRed'] and c0['IsGreen'] and (c0['Close'] > c1['Open']): res = {"pattern": "Bullish Engulfing", "sentiment": "Strong Reversal Up"}
+            elif c1['IsGreen'] and c0['IsRed'] and (c0['Close'] < c1['Open']): res = {"pattern": "Bearish Engulfing", "sentiment": "Strong Reversal Down"}
+            elif is_downtrend and c2['IsRed'] and (c1['Body'] < 0.5 * c2['Body']) and c0['IsGreen'] and (c0['Close'] > (c2['Open'] + c2['Close'])/2): res = {"pattern": "Morning Star", "sentiment": "Major Bullish Reversal"}
+            elif is_uptrend and c2['IsGreen'] and (c1['Body'] < 0.5 * c2['Body']) and c0['IsRed'] and (c0['Close'] < (c2['Open'] + c2['Close'])/2): res = {"pattern": "Evening Star", "sentiment": "Major Bearish Reversal"}
+            elif c0['IsGreen'] and c1['IsGreen'] and c2['IsGreen'] and (c0['Close'] > c1['Close'] > c2['Close']): res = {"pattern": "Three White Soldiers", "sentiment": "Strong Bullish Momentum"}
             elif res["pattern"] == "None":
                 if is_hammer_shape:
                     if is_downtrend: res = {"pattern": "Hammer", "sentiment": "Bullish Reversal"}
@@ -405,14 +363,44 @@ class StockAnalyzer:
                 elif is_inverted_shape:
                     if is_downtrend: res = {"pattern": "Inverted Hammer", "sentiment": "Potential Bottom"}
                     elif is_uptrend: res = {"pattern": "Shooting Star", "sentiment": "Bearish Reversal"}
-                elif is_marubozu:
-                    if c0['IsGreen']: res = {"pattern": "Bullish Marubozu", "sentiment": "Strong Buying"}
-                    else: res = {"pattern": "Bearish Marubozu", "sentiment": "Strong Selling"}
-                elif is_doji:
-                    res = {"pattern": "Doji", "sentiment": "Indecision"}
-
+                elif is_marubozu: res = {"pattern": "Marubozu", "sentiment": "Strong Trend"}
+                elif is_doji: res = {"pattern": "Doji", "sentiment": "Indecision"}
         except Exception: pass
         return res
+
+    def validate_signal(self, action, context):
+        score = 0
+        reasons = []
+        
+        rvol = self.df['RVOL'].iloc[-1] if 'RVOL' in self.df.columns else 1.0
+        if rvol > 1.2:
+            score += 1
+            reasons.append("High Volume")
+        
+        if "BUYING" in context['smart_money']:
+            score += 1
+            reasons.append("Smart Money Accumulation")
+            
+        if self.market_df is not None and len(self.market_df) > 5:
+            stock_ret = (self.df['Close'].iloc[-1] - self.df['Close'].iloc[-5]) / self.df['Close'].iloc[-5]
+            market_ret = (self.market_df['Close'].iloc[-1] - self.market_df['Close'].iloc[-5]) / self.market_df['Close'].iloc[-5]
+            if stock_ret > market_ret:
+                score += 1
+                reasons.append("Outperforming Index (Leader)")
+                
+        if "Bullish" in context['candle']['sentiment'] or "Strong" in context['candle']['sentiment']:
+            score += 1
+            reasons.append("Bullish Candle Pattern")
+            
+        if 'EMA_50' in self.df.columns and self.df['Close'].iloc[-1] > self.df['EMA_50'].iloc[-1]:
+            score += 1
+            reasons.append("Aligned with Med-Term Trend")
+            
+        verdict = "WEAK"
+        if score >= 4: verdict = "STRONG CONVICTION"
+        elif score >= 2: verdict = "MODERATE"
+        
+        return score, verdict, reasons
 
     def get_market_context(self):
         last_price = self.df['Close'].iloc[-1]
@@ -426,10 +414,7 @@ class StockAnalyzer:
         fib_win = self.df[-fib_lookback:]
         sh, sl = fib_win['High'].max(), fib_win['Low'].min()
         rng = sh - sl
-        fibs = {
-            "1.0 (Low)": sl, "0.618 (Golden)": sh - (0.618 * rng),
-            "0.5 (Half)": sh - (0.5 * rng), "0.382": sh - (0.382 * rng), "0.236": sh - (0.236 * rng), "0.0 (High)": sh
-        } if rng > 0 else {}
+        fibs = { "1.0 (Low)": sl, "0.618 (Golden)": sh-(0.618*rng), "0.5 (Half)": sh-(0.5*rng), "0.382": sh-(0.382*rng), "0.0 (High)": sh } if rng > 0 else {}
         
         trend = "NEUTRAL"
         if self.active_trend_col in self.df.columns:
@@ -439,7 +424,6 @@ class StockAnalyzer:
         
         obv_status = "Neutral"
         money_flow = "Neutral"
-        
         if self.data_len > OBV_LOOKBACK_DAYS:
             curr_obv, prev_obv = self.df['OBV'].iloc[-1], self.df['OBV'].iloc[-OBV_LOOKBACK_DAYS]
             last_p, prev_p = self.df['Close'].iloc[-1], self.df['Close'].iloc[-OBV_LOOKBACK_DAYS]
@@ -453,70 +437,66 @@ class StockAnalyzer:
             vol = self.df['Volume'].iloc[-1]
             vol_ma = self.df['VOL_MA'].iloc[-1] if 'VOL_MA' in self.df.columns else 1
             
-            if cmf > 0.05: money_flow = "INSTITUTIONAL BUYING (Accumulation)" if mfi < 80 else "BUYING FRENZY (Overheated)"
-            elif cmf < -0.05: money_flow = "INSTITUTIONAL SELLING (Distribution)"
-            else: money_flow = "RETAIL NOISE / Indecision"
+            if cmf > 0.05: money_flow = "INSTITUTIONAL BUYING" if mfi < 80 else "BUYING FRENZY"
+            elif cmf < -0.05: money_flow = "INSTITUTIONAL SELLING"
+            else: money_flow = "RETAIL NOISE"
             if vol > (2.0 * vol_ma): money_flow += " [HIGH VOLUME]"
-
-        # Patterns
-        candle_pat = self.detect_candle_patterns()
 
         return {
             "price": last_price, "support": support, "resistance": resistance,
             "dist_support": dist_supp, "fib_levels": fibs, "trend": trend,
             "atr": atr, "obv_status": obv_status, "smart_money": money_flow,
-            "vcp": self.detect_vcp_pattern(), 
-            "geo": self.detect_geometric_patterns(),
-            "candle": candle_pat
+            "vcp": self.detect_vcp_pattern(), "geo": self.detect_geometric_patterns(),
+            "candle": self.detect_candle_patterns()
         }
 
-    def calculate_trade_plan(self, action, current_price, atr, support, resistance, best_strategy, fib_levels):
-        plan = {"entry": 0, "stop_loss": 0, "take_profit": 0, "risk_reward": "N/A", "status": "ACTIVE"}
-        sl_mult, tp_mult = self.config["SL_MULTIPLIER"], self.config["TP_MULTIPLIER"]
+    def calculate_trade_plan(self, plan_type, action, current_price, atr, support, resistance, best_strategy, fib_levels):
+        """Generates separate plans for Short Term and Swing."""
+        plan = {"type": plan_type, "entry": 0, "stop_loss": 0, "take_profit": 0, "risk_reward": "N/A", "status": "ACTIVE"}
+        
+        if plan_type == "SHORT_TERM":
+            sl_mult = 1.5
+            tp_mult = 2.0
+        else: # SWING
+            sl_mult = self.config["SL_MULTIPLIER"]
+            tp_mult = 4.0
 
         if "BUY" in action:
             plan['entry'] = current_price
-            plan['status'] = "EXECUTE NOW (Market Order)"
-            sl_dist = (atr * sl_mult) if atr > 0 else (current_price * 0.05)
-            plan['stop_loss'] = current_price - sl_dist
-            tp_dist = (atr * tp_mult) if atr > 0 else (current_price * 0.10)
-            plan['take_profit'] = current_price + tp_dist
-            plan['risk_reward'] = f"1:{tp_mult/sl_mult:.1f} (Dynamic ATR)"
+            plan['status'] = "EXECUTE NOW (Market)"
+            plan['stop_loss'] = current_price - (atr * sl_mult)
+            plan['take_profit'] = current_price + (atr * tp_mult)
+            plan['risk_reward'] = f"1:{tp_mult/sl_mult:.1f}"
             
         elif "WAIT" in action:
-            plan['status'] = "PENDING (Wait for Limit)"
+            plan['status'] = "PENDING (Limit)"
             strategy_type = best_strategy.get('strategy', 'None')
             
             if "RSI" in strategy_type or "Stoch" in strategy_type:
                 target_fib = 0
-                target_label = ""
-                potential_supports = []
-                for label, price in fib_levels.items():
+                for _, price in sorted(fib_levels.items(), key=lambda x: x[1], reverse=True):
                     if price < current_price:
-                        potential_supports.append((label, price))
-                potential_supports.sort(key=lambda x: x[1], reverse=True)
-                if potential_supports:
-                    target_label, target_fib = potential_supports[0]
-                    
-                if target_fib > 0 and target_fib > (current_price * 0.85):
+                        target_fib = price
+                        break
+                
+                if target_fib > (current_price * 0.85):
                     plan['entry'] = target_fib
-                    plan['note'] = f"Waiting for Fib Support: {target_label}"
+                    plan['note'] = "Wait for Fib Support"
                 else:
                     plan['entry'] = support
-                    plan['note'] = f"Strategy uses {best_strategy['details']}. Wait for Support."
+                    plan['note'] = "Wait for Support"
+                    
             elif "MA" in strategy_type:
                 plan['entry'] = resistance
-                plan['note'] = f"Momentum Strategy. Buy Breakout > {resistance:,.0f}."
+                plan['note'] = "Buy Breakout"
             else:
                 plan['entry'] = support
-                plan['note'] = "Wait for Support."
+                plan['note'] = "Wait for Support"
 
             if plan['entry'] > 0:
-                sl_dist = (atr * sl_mult) if atr > 0 else (plan['entry'] * 0.05)
-                plan['stop_loss'] = plan['entry'] - sl_dist
-                tp_dist = (atr * tp_mult) if atr > 0 else (plan['entry'] * 0.10)
-                plan['take_profit'] = plan['entry'] + tp_dist
-                plan['risk_reward'] = "Projection (If Filled)"
+                plan['stop_loss'] = plan['entry'] - (atr * sl_mult)
+                plan['take_profit'] = plan['entry'] + (atr * tp_mult)
+                plan['risk_reward'] = "Projection"
             
         return plan
 
@@ -525,50 +505,36 @@ class StockAnalyzer:
         self.prepare_indicators()
         self.analyze_news_sentiment()
         
-        top_strategies = self.optimize_stock()
-        best = top_strategies[0]
+        # Dual Optimization
+        # UPDATED: Swing optimization looks up to 60 days (approx 3 months)
+        best_short = self.optimize_stock(1, 5)
+        best_swing = self.optimize_stock(6, 60)
+        
         ctx = self.get_market_context()
         
-        action = "WAIT"
-        trigger_msg = "No clear signal matched best strategy."
+        # Decision Logic (Short Term)
+        action_short = "WAIT"
+        if best_short['is_triggered_today']: action_short = "ACTION: BUY (Signal)"
+        elif ctx['dist_support'] < 2.0: action_short = "ACTION: BUY (Support Scalp)"
         
-        if best['is_triggered_today']:
-            if "RSI" in str(best['strategy']) or "Stoch" in str(best['strategy']): action = "ACTION: BUY ON DIP"
-            elif "MA" in str(best['strategy']): action = "ACTION: BUY MOMENTUM"
-            trigger_msg = f"Triggered by {best['details']}"
-        elif ctx['dist_support'] < 3.0: 
-             if action == "WAIT":
-                action = "ACTION: BUY ON DIP"
-                trigger_msg = f"Price is {ctx['dist_support']:.1f}% from Support."
+        # Decision Logic (Swing)
+        action_swing = "WAIT"
+        if best_swing['is_triggered_today'] and ctx['trend'] == "UPTREND": action_swing = "ACTION: BUY (Trend)"
+        elif ctx['dist_support'] < 3.0 and ctx['smart_money'] == "INSTITUTIONAL BUYING": action_swing = "ACTION: BUY (Accumulation)"
 
-        if ctx['trend'] == "DOWNTREND" and "MOMENTUM" in action:
-            action = "WAIT"
-            trigger_msg += f" [Blocked by Trend]"
-        if "Negative" in self.news_analysis['sentiment'] and "BUY" in action:
-             action = "CAUTION / WAIT"
-             trigger_msg += " [Blocked by News]"
+        val_score, val_verdict, val_reasons = self.validate_signal(action_short if action_short == "BUY" else action_swing, ctx)
 
-        # Candlestick Override (Strong Reversal)
-        if action == "WAIT" and ctx['candle']['pattern'] in ["Hammer", "Morning Star", "Three White Soldiers", "Bullish Engulfing", "Piercing Line", "Bullish Marubozu"]:
-             if ctx['dist_support'] < 5.0: 
-                 action = "ACTION: BUY (Reversal Pattern)"
-                 trigger_msg = f"Pattern: {ctx['candle']['pattern']} near Support"
-             else:
-                 trigger_msg += f" [Watch: {ctx['candle']['pattern']} formed]"
-
-        if (ctx['vcp']['detected'] or ctx['geo']['pattern'] != "None") and action == "WAIT":
-             trigger_msg += f" [PATTERN WATCH: {ctx['geo']['pattern'] if ctx['geo']['pattern'] != 'None' else 'VCP'}]"
-
-        trade_plan = self.calculate_trade_plan(
-            action, ctx['price'], ctx['atr'], ctx['support'], ctx['resistance'], best, ctx['fib_levels']
-        )
+        plan_short = self.calculate_trade_plan("SHORT_TERM", action_short, ctx['price'], ctx['atr'], ctx['support'], ctx['resistance'], best_short, ctx['fib_levels'])
+        plan_swing = self.calculate_trade_plan("SWING", action_swing, ctx['price'], ctx['atr'], ctx['support'], ctx['resistance'], best_swing, ctx['fib_levels'])
 
         return {
             "ticker": self.ticker, "name": self.info.get('longName', self.ticker),
-            "price": ctx['price'], "action": action, "trigger": trigger_msg,
-            "sentiment": self.news_analysis, "best_strategy": best,
-            "all_strategies": top_strategies, "context": ctx,
-            "trade_plan": trade_plan, "is_ipo": self.data_len < 200, "days_listed": self.data_len
+            "price": ctx['price'], 
+            "sentiment": self.news_analysis, 
+            "context": ctx,
+            "plans": [plan_short, plan_swing],
+            "validation": {"score": val_score, "verdict": val_verdict, "reasons": val_reasons},
+            "is_ipo": self.data_len < 200, "days_listed": self.data_len
         }
 
 
