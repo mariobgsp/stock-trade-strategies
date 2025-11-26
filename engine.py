@@ -13,13 +13,14 @@ from datetime import datetime, timedelta
 # ==========================================
 DEFAULT_CONFIG = {
     "BACKTEST_PERIOD": "2y",
-    "MAX_HOLD_DAYS": 60,
+    "MAX_HOLD_DAYS": 60, # Extended for Swing (3 Months)
     "FIB_LOOKBACK_DAYS": 120,
     "RSI_PERIOD": 14,
     "RSI_LOWER": 30,
     "ATR_PERIOD": 14,
-    "SL_MULTIPLIER": 2.0,
-    "TP_MULTIPLIER": 3.0,
+    # Unified Swing Defaults
+    "SL_MULTIPLIER": 2.5, 
+    "TP_MULTIPLIER": 5.0, 
     "CMF_PERIOD": 20,
     "MFI_PERIOD": 14,
     "VOL_MA_PERIOD": 20,
@@ -483,11 +484,11 @@ class StockAnalyzer:
 
     def calculate_trade_plan(self, plan_type, action, current_price, atr, support, resistance, best_strategy, fib_levels, pivots, trend_status):
         plan = {"type": plan_type, "entry": 0, "stop_loss": 0, "take_profit": 0, "risk_reward": "N/A", "status": "ACTIVE"}
-        sl_mult = 1.5 if plan_type == "SHORT_TERM" else self.config["SL_MULTIPLIER"]
-        tp_mult = 2.0 if plan_type == "SHORT_TERM" else 4.0
+        sl_mult = self.config["SL_MULTIPLIER"] # Uses Default for Swing
+        tp_mult = self.config["TP_MULTIPLIER"]
 
         # SWING logic update: Be more patient if not in Stage 2
-        if plan_type == "SWING" and "UPTREND" not in trend_status:
+        if "UPTREND" not in trend_status:
              action = "WAIT" # Force wait if Minervini trend is broken
 
         if "BUY" in action:
@@ -507,13 +508,9 @@ class StockAnalyzer:
                 for _, price in sorted(fib_levels.items(), key=lambda x: x[1], reverse=True):
                     if price < current_price: target_fib = price; break
                 
-                s1 = pivots.get("S1", 0)
-                if plan_type == "SHORT_TERM":
-                    if s1 > (current_price * 0.85): target_price = s1; plan['note'] = "Wait for Pivot S1"
-                    else: target_price = support; plan['note'] = "Wait for Support"
-                else: 
-                    if target_fib > (current_price * 0.85): target_price = target_fib; plan['note'] = "Wait for Fib Support"
-                    else: target_price = support; plan['note'] = "Wait for Major Support"
+                # Swing Priorities: Fib > Support
+                if target_fib > (current_price * 0.85): target_price = target_fib; plan['note'] = "Wait for Fib Support"
+                else: target_price = support; plan['note'] = "Wait for Major Support"
             elif "MA" in strategy_type:
                 target_price = resistance; plan['note'] = "Buy Breakout"
 
@@ -530,28 +527,28 @@ class StockAnalyzer:
         self.prepare_indicators()
         self.analyze_news_sentiment()
         
-        best_short = self.optimize_stock(1, 5)
-        best_swing = self.optimize_stock(10, 60)
+        # MERGED OPTIMIZATION: 1 to 60 days (Pure Swing Focus)
+        best_strategy = self.optimize_stock(1, 60) 
+        
         ctx = self.get_market_context()
         trend_template = self.check_trend_template()
         
-        action_short = "WAIT"
-        if best_short['is_triggered_today']: action_short = "ACTION: BUY (Signal)"
-        elif ctx['dist_support'] < 2.0: action_short = "ACTION: BUY (Support Scalp)"
-        
-        action_swing = "WAIT"
-        if best_swing['is_triggered_today'] and trend_template['score'] >= 4: action_swing = "ACTION: BUY (Trend)"
-        elif ctx['dist_support'] < 3.0 and ctx['smart_money'] == "INSTITUTIONAL BUYING": action_swing = "ACTION: BUY (Accumulation)"
+        action = "WAIT"
+        # Stronger Condition: Must be in Uptrend + Signal Triggered
+        if best_strategy['is_triggered_today'] and trend_template['score'] >= 4: 
+            action = "ACTION: BUY (Trend)"
+        elif ctx['dist_support'] < 3.0 and ctx['smart_money'] == "INSTITUTIONAL BUYING": 
+            action = "ACTION: BUY (Accumulation)"
 
-        val_score, val_verdict, val_reasons = self.validate_signal(action_short if action_short == "BUY" else action_swing, ctx, trend_template)
+        val_score, val_verdict, val_reasons = self.validate_signal(action, ctx, trend_template)
 
-        plan_short = self.calculate_trade_plan("SHORT_TERM", action_short, ctx['price'], ctx['atr'], ctx['support'], ctx['resistance'], best_short, ctx['fib_levels'], ctx['pivots'], "UPTREND")
-        plan_swing = self.calculate_trade_plan("SWING", action_swing, ctx['price'], ctx['atr'], ctx['support'], ctx['resistance'], best_swing, ctx['fib_levels'], ctx['pivots'], trend_template['status'])
+        # Generate ONE optimized plan
+        plan = self.calculate_trade_plan("OPTIMIZED_SWING", action, ctx['price'], ctx['atr'], ctx['support'], ctx['resistance'], best_strategy, ctx['fib_levels'], ctx['pivots'], trend_template['status'])
 
         return {
             "ticker": self.ticker, "name": self.info.get('longName', self.ticker),
             "price": ctx['price'], "sentiment": self.news_analysis, "context": ctx,
-            "plans": [plan_short, plan_swing],
+            "plans": [plan], # Return only one plan
             "validation": {"score": val_score, "verdict": val_verdict, "reasons": val_reasons},
             "trend_template": trend_template, 
             "is_ipo": self.data_len < 200, "days_listed": self.data_len
