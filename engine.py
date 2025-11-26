@@ -13,13 +13,13 @@ from datetime import datetime, timedelta
 # ==========================================
 DEFAULT_CONFIG = {
     "BACKTEST_PERIOD": "2y",
-    "MAX_HOLD_DAYS": 60,
+    "MAX_HOLD_DAYS": 60, # 3 Months (Trading Days)
     "FIB_LOOKBACK_DAYS": 120,
     "RSI_PERIOD": 14,
     "RSI_LOWER": 30,
     "ATR_PERIOD": 14,
-    "SL_MULTIPLIER": 2.0,
-    "TP_MULTIPLIER": 3.0,
+    "SL_MULTIPLIER": 2.5, # Default Wider for Swing Safety
+    "TP_MULTIPLIER": 5.0, 
     "CMF_PERIOD": 20,
     "MFI_PERIOD": 14,
     "VOL_MA_PERIOD": 20,
@@ -31,7 +31,7 @@ MA_TEST_PAIRS = [(5, 20), (20, 50), (50, 200)]
 STOCH_K_PERIOD = 14
 STOCH_D_PERIOD = 3
 STOCH_OVERSOLD = 20
-OBV_LOOKBACK_DAYS = 5
+OBV_LOOKBACK_DAYS = 10
 TREND_EMA_DEFAULT = 200
 
 class StockAnalyzer:
@@ -58,6 +58,7 @@ class StockAnalyzer:
         try:
             period = self.config["BACKTEST_PERIOD"]
             self.df = yf.download(self.ticker, period=period, progress=False, auto_adjust=True)
+            
             try:
                 self.market_df = yf.download(self.market_ticker, period=period, progress=False, auto_adjust=True)
                 if isinstance(self.market_df.columns, pd.MultiIndex):
@@ -65,8 +66,10 @@ class StockAnalyzer:
             except: self.market_df = None
 
             if self.df.empty: return False
+            
             if isinstance(self.df.columns, pd.MultiIndex):
                 self.df.columns = self.df.columns.get_level_values(0)
+            
             self.data_len = len(self.df)
 
             ticker_obj = yf.Ticker(self.ticker)
@@ -361,35 +364,65 @@ class StockAnalyzer:
                 return {"detected": False, "msg": "Volatility not contracting."}
         except Exception as e: return {"detected": False, "msg": f"Error: {str(e)}"}
 
-    def detect_geometric_patterns(self):
+    def _detect_geometry_on_slice(self, df_slice):
         result = {"pattern": "None", "msg": ""}
-        try:
-            if self.data_len < 60: return result
-            df = self.df[-60:].copy()
-            df['is_peak'] = df['High'] == df['High'].rolling(window=5, center=True).max()
-            df['is_trough'] = df['Low'] == df['Low'].rolling(window=5, center=True).min()
-            peaks = df[df['is_peak']]
-            troughs = df[df['is_trough']]
-            if len(peaks) < 2 or len(troughs) < 2: return result
-            
-            p2, p1 = peaks['High'].iloc[-1], peaks['High'].iloc[-2] 
-            t2, t1 = troughs['Low'].iloc[-1], troughs['Low'].iloc[-2] 
-            is_lower_highs = p2 < (p1 * 0.99)
-            is_higher_lows = t2 > (t1 * 1.01)
-            is_flat_highs  = abs(p2 - p1) / p1 < 0.01
-            is_flat_lows   = abs(t2 - t1) / t1 < 0.01
-            
-            if is_lower_highs and is_higher_lows: result["pattern"], result["msg"] = "Symmetrical Triangle", "Price coiling. Breakout imminent."
-            elif is_flat_highs and is_higher_lows: result["pattern"], result["msg"] = "Ascending Triangle", "Bullish Setup. Flat Resistance."
-            elif is_lower_highs and is_flat_lows: result["pattern"], result["msg"] = "Descending Triangle", "Bearish Setup. Flat Support."
-            
-            if result["pattern"] != "None":
-                pre_consolid_df = self.df[-50:-20] 
-                if not pre_consolid_df.empty:
-                    move_pct = (pre_consolid_df['High'].max() - pre_consolid_df['Low'].min()) / pre_consolid_df['Low'].min()
-                    if move_pct > 0.15: result["pattern"] += " (Bullish Pennant)"
-        except Exception: pass
+        if len(df_slice) < 60: return result
+        
+        df = df_slice[-60:].copy()
+        df['is_peak'] = df['High'] == df['High'].rolling(window=5, center=True).max()
+        df['is_trough'] = df['Low'] == df['Low'].rolling(window=5, center=True).min()
+        peaks = df[df['is_peak']]
+        troughs = df[df['is_trough']]
+        
+        if len(peaks) < 2 or len(troughs) < 2: return result
+        
+        p2, p1 = peaks['High'].iloc[-1], peaks['High'].iloc[-2]
+        t2, t1 = troughs['Low'].iloc[-1], troughs['Low'].iloc[-2]
+        
+        p2_idx, p1_idx = df.index.get_loc(peaks.index[-1]), df.index.get_loc(peaks.index[-2])
+        t2_idx, t1_idx = df.index.get_loc(troughs.index[-1]), df.index.get_loc(troughs.index[-2])
+
+        m_res = (p2 - p1) / (p2_idx - p1_idx) if (p2_idx - p1_idx) != 0 else 0
+        m_sup = (t2 - t1) / (t2_idx - t1_idx) if (t2_idx - t1_idx) != 0 else 0
+        
+        if m_res < -0.01 and m_sup > 0.01: result["pattern"] = "Symmetrical Triangle"
+        elif abs(m_res) < 0.01 and m_sup > 0.01: result["pattern"] = "Ascending Triangle"
+        elif m_res < -0.01 and abs(m_sup) < 0.01: result["pattern"] = "Descending Triangle"
+        
+        c_res = p1 - (m_res * p1_idx)
+        c_sup = t1 - (m_sup * t1_idx)
+        apex_x = 0
+        if (m_res - m_sup) != 0: apex_x = (c_sup - c_res) / (m_res - m_sup)
+        result["apex_dist"] = apex_x - (len(df) - 1)
+        
         return result
+
+    def detect_geometric_patterns(self):
+        res = self._detect_geometry_on_slice(self.df)
+        if res["pattern"] != "None":
+            if "apex_dist" in res and 0 < res["apex_dist"] < 30:
+                res["msg"] += f" Apex in ~{int(res['apex_dist'])} days."
+        return res
+
+    def backtest_pattern_reliability(self):
+        if self.data_len < 200: return {"accuracy": "N/A", "count": 0}
+        wins = 0
+        total_patterns = 0
+        
+        for i in range(100, self.data_len - 20, 5):
+            slice_df = self.df.iloc[:i]
+            res = self._detect_geometry_on_slice(slice_df)
+            if res["pattern"] != "None":
+                total_patterns += 1
+                future_window = self.df.iloc[i : i+20]
+                entry_price = slice_df['Close'].iloc[-1]
+                max_price = future_window['High'].max()
+                if max_price > (entry_price * 1.03): wins += 1
+        
+        if total_patterns == 0: return {"accuracy": "N/A", "count": 0}
+        win_rate = (wins / total_patterns) * 100
+        verdict = "Likely Success" if win_rate > 60 else "Likely Fail" if win_rate < 40 else "Coin Flip"
+        return { "accuracy": f"{win_rate:.1f}%", "count": total_patterns, "verdict": verdict, "wins": wins }
 
     def detect_candle_patterns(self):
         res = {"pattern": "None", "sentiment": "Neutral"}
@@ -424,6 +457,10 @@ class StockAnalyzer:
             if s_ret > m_ret: score += 1; reasons.append("Leader vs IHSG")
                 
         if context['squeeze']['detected']: score += 2; reasons.append("TTM Squeeze Firing")
+
+        pat_stats = context.get('pattern_stats', {})
+        if "Success" in pat_stats.get('verdict', ''):
+            score += 1; reasons.append("Historical Pattern Success")
 
         verdict = "WEAK"
         if score >= 5: verdict = "ELITE SWING SETUP"
@@ -461,16 +498,22 @@ class StockAnalyzer:
             elif cmf < -0.05: money_flow = "INSTITUTIONAL SELLING"
             else: money_flow = "RETAIL NOISE"
             if vol > (2.0 * vol_ma): money_flow += " [HIGH VOLUME]"
+        
+        geo_status = self.detect_geometric_patterns()
+        pattern_stats = {}
+        if geo_status["pattern"] != "None":
+            pattern_stats = self.backtest_pattern_reliability()
 
         return {
             "price": last_price, "support": support, "resistance": resistance,
             "dist_support": dist_supp, "fib_levels": fibs, "trend": trend,
             "atr": atr, "obv_status": obv_status, "smart_money": money_flow,
-            "vcp": self.detect_vcp_pattern(), "geo": self.detect_geometric_patterns(),
+            "vcp": self.detect_vcp_pattern(), "geo": geo_status,
             "candle": self.detect_candle_patterns(),
             "fundamental": self.check_fundamentals(),
             "squeeze": self.detect_ttm_squeeze(),
-            "pivots": self.calculate_pivot_points()
+            "pivots": self.calculate_pivot_points(),
+            "pattern_stats": pattern_stats
         }
 
     def adjust_to_tick_size(self, price):
@@ -483,18 +526,16 @@ class StockAnalyzer:
 
     def calculate_trade_plan(self, plan_type, action, current_price, atr, support, resistance, best_strategy, fib_levels, pivots, trend_status):
         plan = {"type": plan_type, "entry": 0, "stop_loss": 0, "take_profit": 0, "risk_reward": "N/A", "status": "ACTIVE"}
-        sl_mult = self.config["SL_MULTIPLIER"] # Uses Default for Swing
+        sl_mult = self.config["SL_MULTIPLIER"]
         tp_mult = self.config["TP_MULTIPLIER"]
 
-        # SWING logic update: Be more patient if not in Stage 2
         if "UPTREND" not in trend_status:
-             action = "WAIT" # Force wait if Minervini trend is broken
+             action = "WAIT"
 
         if "BUY" in action:
             plan['entry'] = self.adjust_to_tick_size(current_price)
             plan['status'] = "EXECUTE NOW (Market)"
             
-            # Option A: Dynamic (ATR)
             sl_price = self.adjust_to_tick_size(current_price - (atr * sl_mult))
             tp_price = self.adjust_to_tick_size(current_price + (atr * tp_mult))
             
@@ -502,7 +543,6 @@ class StockAnalyzer:
             plan['take_profit'] = tp_price
             plan['risk_reward'] = f"1:{tp_mult/sl_mult:.1f}"
 
-            # Option B: Aggressive 1:3
             risk = current_price - sl_price
             if risk > 0:
                 tp_3r = current_price + (risk * 3.0)
@@ -518,7 +558,6 @@ class StockAnalyzer:
                 for _, price in sorted(fib_levels.items(), key=lambda x: x[1], reverse=True):
                     if price < current_price: target_fib = price; break
                 
-                # Swing Priorities: Fib > Support
                 if target_fib > (current_price * 0.85): target_price = target_fib; plan['note'] = "Wait for Fib Support"
                 else: target_price = support; plan['note'] = "Wait for Major Support"
             elif "MA" in strategy_type:
@@ -526,14 +565,10 @@ class StockAnalyzer:
 
             plan['entry'] = self.adjust_to_tick_size(target_price)
             if plan['entry'] > 0:
-                # Calc SL based on projected entry
                 sl_price = self.adjust_to_tick_size(plan['entry'] - (atr * sl_mult))
                 plan['stop_loss'] = sl_price
-                
-                # Dynamic TP
                 plan['take_profit'] = self.adjust_to_tick_size(plan['entry'] + (atr * tp_mult))
                 
-                # Aggressive 1:3 TP
                 risk = plan['entry'] - sl_price
                 if risk > 0:
                     tp_3r = plan['entry'] + (risk * 3.0)
@@ -548,14 +583,12 @@ class StockAnalyzer:
         self.prepare_indicators()
         self.analyze_news_sentiment()
         
-        # MERGED OPTIMIZATION: 1 to 60 days (Pure Swing Focus)
         best_strategy = self.optimize_stock(1, 60) 
         
         ctx = self.get_market_context()
         trend_template = self.check_trend_template()
         
         action = "WAIT"
-        # Stronger Condition: Must be in Uptrend + Signal Triggered
         if best_strategy['is_triggered_today'] and trend_template['score'] >= 4: 
             action = "ACTION: BUY (Trend)"
         elif ctx['dist_support'] < 3.0 and ctx['smart_money'] == "INSTITUTIONAL BUYING": 
@@ -563,13 +596,12 @@ class StockAnalyzer:
 
         val_score, val_verdict, val_reasons = self.validate_signal(action, ctx, trend_template)
 
-        # Generate ONE optimized plan
         plan = self.calculate_trade_plan("OPTIMIZED_SWING", action, ctx['price'], ctx['atr'], ctx['support'], ctx['resistance'], best_strategy, ctx['fib_levels'], ctx['pivots'], trend_template['status'])
 
         return {
             "ticker": self.ticker, "name": self.info.get('longName', self.ticker),
             "price": ctx['price'], "sentiment": self.news_analysis, "context": ctx,
-            "plans": [plan], # Return only one plan
+            "plans": [plan], 
             "validation": {"score": val_score, "verdict": val_verdict, "reasons": val_reasons},
             "trend_template": trend_template, 
             "is_ipo": self.data_len < 200, "days_listed": self.data_len
