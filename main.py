@@ -10,7 +10,7 @@ def clear_screen():
 def print_header():
     print("="*60)
     print("      SIMPLE IHSG STOCK VALIDATOR (Professional Swing)      ")
-    print("      Features: Minervini Trend + Smart Money + Dual Plan")
+    print("      Features: Minervini Trend + Smart Money + Optimized")
     print("="*60)
 
 def print_report(data):
@@ -37,33 +37,32 @@ def print_report(data):
     print(f"Market Cap: Rp {fund.get('market_cap', 0):,.0f}")
     if fund.get('warning'): print(f"⚠️ {fund['warning']}")
 
-    # 3. DUAL TRADE PLANS
+    # 3. OPTIMIZED TRADE PLAN (Single Plan)
     val = data['validation']
-    for plan in data['plans']:
-        p_name = "⚡ SHORT TERM (Active)" if plan['type'] == "SHORT_TERM" else "🌊 SWING TERM (Passive)"
-        print(f"\n{p_name}")
-        
-        if plan['type'] == "SWING":
-            thesis = "Wait for setup."
-            if "STRONG" in val['verdict']: thesis = "STRONG BUY. Inst. Accumulation + Trend."
-            elif "MODERATE" in val['verdict']: thesis = "Speculative Buy. Watch stops."
-            print(f"Thesis:      {thesis}")
+    plan = data['plans'][0] # Get the single optimized plan
+    
+    print(f"\n--- 🌊 OPTIMIZED SWING PLAN (1-60 Days) ---")
+    
+    thesis = "Wait for setup."
+    if "STRONG" in val['verdict']: thesis = "STRONG BUY. Inst. Accumulation + Trend."
+    elif "MODERATE" in val['verdict']: thesis = "Speculative Buy. Watch stops."
+    print(f"Thesis:      {thesis}")
 
-        status_display = plan['status']
-        if "EXECUTE" in status_display: status_display = f"!!! {status_display} !!!"
-        print(f"Status:      {status_display}")
-        
-        if "PENDING" in plan['status']:
-             print(f"Note:        {plan.get('note', '')}")
-             print(f"WAIT FOR:    Rp {plan['entry']:,.0f}")
-        else:
-             print(f"ENTRY:       Rp {plan['entry']:,.0f}")
-        
-        if plan['entry'] > 0:
-            sl_pct = ((plan['stop_loss'] - plan['entry']) / plan['entry']) * 100
-            tp_pct = ((plan['take_profit'] - plan['entry']) / plan['entry']) * 100
-            print(f"STOP LOSS:   Rp {plan['stop_loss']:,.0f} ({sl_pct:.1f}%)")
-            print(f"TAKE PROFIT: Rp {plan['take_profit']:,.0f} (+{tp_pct:.1f}%)")
+    status_display = plan['status']
+    if "EXECUTE" in status_display: status_display = f"!!! {status_display} !!!"
+    print(f"Status:      {status_display}")
+    
+    if "PENDING" in plan['status']:
+            print(f"Note:        {plan.get('note', '')}")
+            print(f"WAIT FOR:    Rp {plan['entry']:,.0f}")
+    else:
+            print(f"ENTRY:       Rp {plan['entry']:,.0f}")
+    
+    if plan['entry'] > 0:
+        sl_pct = ((plan['stop_loss'] - plan['entry']) / plan['entry']) * 100
+        tp_pct = ((plan['take_profit'] - plan['entry']) / plan['entry']) * 100
+        print(f"STOP LOSS:   Rp {plan['stop_loss']:,.0f} ({sl_pct:.1f}%)")
+        print(f"TAKE PROFIT: Rp {plan['take_profit']:,.0f} (+{tp_pct:.1f}%)")
 
     # 4. CONTEXT & PATTERNS
     print(f"\n--- MARKET CONTEXT ---")
@@ -76,7 +75,33 @@ def print_report(data):
     vcp = ctx.get('vcp', {})
     if vcp.get('detected'): print(f"[+] {vcp['msg']}")
 
-    # 5. NEWS
+    # 5. CONTEXT & PIVOTS
+    ctx = data['context']
+    pivots = ctx.get('pivots', {})
+    print(f"\n--- CONTEXT & SMART MONEY ---")
+    print(f"Trend:       {ctx['trend']}")
+    print(f"Smart Money: {ctx['smart_money']}")
+    print(f"Pivot (P):   Rp {pivots.get('P', 0):,.0f}")
+    print(f"Supp (S1):   Rp {pivots.get('S1', 0):,.0f}")
+    print(f"Resis (R1):  Rp {pivots.get('R1', 0):,.0f}")
+
+    # 6. FIBONACCI LEVELS (RESTORED)
+    print(f"\n--- FIBONACCI KEY LEVELS ---")
+    fibs = ctx.get('fib_levels', {})
+    curr_p = data['price']
+    if fibs:
+        def get_fib_label(price):
+            if curr_p > price: return "[SUPPORT]"
+            elif curr_p < price: return "[RESISTANCE]"
+            else: return "[AT LEVEL]"
+
+        print(f"High (0.0):      Rp {fibs.get('0.0 (High)', 0):,.0f} {get_fib_label(fibs.get('0.0 (High)', 0))}")
+        print(f"0.382 Level:     Rp {fibs.get('0.382', 0):,.0f} {get_fib_label(fibs.get('0.382', 0))}")
+        print(f"0.5 Halfway:     Rp {fibs.get('0.5 (Half)', 0):,.0f} {get_fib_label(fibs.get('0.5 (Half)', 0))}")
+        print(f"0.618 GOLDEN:    Rp {fibs.get('0.618 (Golden)', 0):,.0f} {get_fib_label(fibs.get('0.618 (Golden)', 0))}")
+        print(f"Low (1.0):       Rp {fibs.get('1.0 (Low)', 0):,.0f} {get_fib_label(fibs.get('1.0 (Low)', 0))}")
+
+    # 7. NEWS
     print(f"\n--- NEWS SENTIMENT ---")
     s_data = data['sentiment']
     print(f"Score: {s_data['score']} ({s_data['sentiment']})")
@@ -117,5 +142,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
