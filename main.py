@@ -9,8 +9,8 @@ def clear_screen():
 
 def print_header():
     print("="*60)
-    print("      SIMPLE IHSG STOCK VALIDATOR (Advanced)      ")
-    print("      Features: Funda + Squeeze + Pivots + Smart Money")
+    print("      SIMPLE IHSG STOCK VALIDATOR (Professional Swing)      ")
+    print("      Features: Minervini Trend + Smart Money + Dual Plan")
     print("="*60)
 
 def print_report(data):
@@ -22,26 +22,33 @@ def print_report(data):
     print(f"PRICE: Rp {data['price']:,.0f}")
     if data['is_ipo']: print(f"[!] WARNING: IPO DETECTED ({data['days_listed']} days listed)")
 
-    # 1. FUNDAMENTAL CHECK
-    fund = data['context'].get('fundamental', {})
-    print(f"\n--- FUNDAMENTAL QUALITY ({fund.get('status')}) ---")
-    print(f"Market Cap:  Rp {fund.get('market_cap', 0):,.0f}")
-    print(f"EPS (TTM):   Rp {fund.get('eps', 0):,.2f}")
-    if fund.get('warning'):
-        print(f"WARNING:     {fund['warning']}")
+    # 1. SWING QUALITY CHECK
+    tt = data['trend_template']
+    print(f"\n--- SWING QUALITY CHECK (Minervini Trend) ---")
+    print(f"Status: {tt['status']} ({tt['score']}/6)")
+    if tt['details']:
+        for det in tt['details']:
+            prefix = "✅" if "WARNING" not in det and "Error" not in det else "⚠️"
+            print(f" {prefix} {det}")
 
-    # 2. VALIDATION SCORE
-    val = data['validation']
-    stars = "⭐" * val['score']
-    print(f"\n--- CONFLUENCE SCORE: {val['score']}/5 {stars} ---")
-    print(f"Verdict: {val['verdict']}")
-    if val['reasons']:
-        print(f"Factors: {', '.join(val['reasons'])}")
+    # 2. FUNDAMENTALS
+    fund = data['context'].get('fundamental', {})
+    print(f"\n--- FUNDAMENTALS ---")
+    print(f"Market Cap: Rp {fund.get('market_cap', 0):,.0f}")
+    if fund.get('warning'): print(f"⚠️ {fund['warning']}")
 
     # 3. DUAL TRADE PLANS
+    val = data['validation']
     for plan in data['plans']:
-        p_name = "⚡ SHORT TERM (1-5 Days)" if plan['type'] == "SHORT_TERM" else "🌊 SWING TERM (>5 Days)"
+        p_name = "⚡ SHORT TERM (Active)" if plan['type'] == "SHORT_TERM" else "🌊 SWING TERM (Passive)"
         print(f"\n{p_name}")
+        
+        if plan['type'] == "SWING":
+            thesis = "Wait for setup."
+            if "STRONG" in val['verdict']: thesis = "STRONG BUY. Inst. Accumulation + Trend."
+            elif "MODERATE" in val['verdict']: thesis = "Speculative Buy. Watch stops."
+            print(f"Thesis:      {thesis}")
+
         status_display = plan['status']
         if "EXECUTE" in status_display: status_display = f"!!! {status_display} !!!"
         print(f"Status:      {status_display}")
@@ -58,47 +65,18 @@ def print_report(data):
             print(f"STOP LOSS:   Rp {plan['stop_loss']:,.0f} ({sl_pct:.1f}%)")
             print(f"TAKE PROFIT: Rp {plan['take_profit']:,.0f} (+{tp_pct:.1f}%)")
 
-    # 4. CHART PATTERNS
-    print(f"\n--- CHART & PATTERNS ---")
-    candle = data['context'].get('candle', {})
-    if candle.get('pattern') != "None": print(f"[+] CANDLE: {candle['pattern']} ({candle['sentiment']})")
-    
-    sqz = data['context'].get('squeeze', {})
-    if sqz.get('detected'): print(f"[!!!] TTM SQUEEZE: {sqz['msg']}")
-
-    vcp = data['context'].get('vcp', {})
-    if vcp.get('detected'): print(f"[+] VCP: {vcp['msg']}")
-    
-    geo = data['context'].get('geo', {})
-    if geo.get('pattern') != "None": print(f"[+] GEO: {geo['pattern']}")
-
-    # 5. CONTEXT & PIVOTS
+    # 4. CONTEXT & PATTERNS
+    print(f"\n--- MARKET CONTEXT ---")
     ctx = data['context']
-    pivots = ctx.get('pivots', {})
-    print(f"\n--- CONTEXT & SMART MONEY ---")
-    print(f"Trend:       {ctx['trend']}")
     print(f"Smart Money: {ctx['smart_money']}")
-    print(f"Pivot (P):   Rp {pivots.get('P', 0):,.0f}")
-    print(f"Supp (S1):   Rp {pivots.get('S1', 0):,.0f}")
-    print(f"Resis (R1):  Rp {pivots.get('R1', 0):,.0f}")
+    
+    sqz = ctx.get('squeeze', {})
+    if sqz.get('detected'): print(f"[!!!] {sqz['msg']}")
 
-    # 6. FIBONACCI LEVELS
-    print(f"\n--- FIBONACCI KEY LEVELS ---")
-    fibs = ctx.get('fib_levels', {})
-    curr_p = data['price']
-    if fibs:
-        def get_fib_label(price):
-            if curr_p > price: return "[SUPPORT]"
-            elif curr_p < price: return "[RESISTANCE]"
-            else: return "[AT LEVEL]"
+    vcp = ctx.get('vcp', {})
+    if vcp.get('detected'): print(f"[+] {vcp['msg']}")
 
-        print(f"High (0.0):      Rp {fibs.get('0.0 (High)', 0):,.0f} {get_fib_label(fibs.get('0.0 (High)', 0))}")
-        print(f"0.382 Level:     Rp {fibs.get('0.382', 0):,.0f} {get_fib_label(fibs.get('0.382', 0))}")
-        print(f"0.5 Halfway:     Rp {fibs.get('0.5 (Half)', 0):,.0f} {get_fib_label(fibs.get('0.5 (Half)', 0))}")
-        print(f"0.618 GOLDEN:    Rp {fibs.get('0.618 (Golden)', 0):,.0f} {get_fib_label(fibs.get('0.618 (Golden)', 0))}")
-        print(f"Low (1.0):       Rp {fibs.get('1.0 (Low)', 0):,.0f} {get_fib_label(fibs.get('1.0 (Low)', 0))}")
-
-    # 7. NEWS SENTIMENT
+    # 5. NEWS
     print(f"\n--- NEWS SENTIMENT ---")
     s_data = data['sentiment']
     print(f"Score: {s_data['score']} ({s_data['sentiment']})")
@@ -112,6 +90,7 @@ def main():
     parser.add_argument('--period', default=DEFAULT_CONFIG['BACKTEST_PERIOD'])
     parser.add_argument('--sl', type=float, default=DEFAULT_CONFIG['SL_MULTIPLIER'])
     parser.add_argument('--tp', type=float, default=DEFAULT_CONFIG['TP_MULTIPLIER'])
+    
     parser.add_argument('--fib', type=int, default=DEFAULT_CONFIG['FIB_LOOKBACK_DAYS'])
     parser.add_argument('--cmf', type=int, default=DEFAULT_CONFIG['CMF_PERIOD'])
     parser.add_argument('--mfi', type=int, default=DEFAULT_CONFIG['MFI_PERIOD'])
