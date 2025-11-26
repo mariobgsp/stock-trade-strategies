@@ -33,11 +33,11 @@ jobs:
     #   run: python main.py BBCA
 
     - name: Analyze Stock (Custom Flag Test)
-      run: python main.py DRMA --period 2y --sl 3.0 --tp 9.0 --fib 60
+      run: python main.py ELSA --period 2y --sl 3.0 --tp 9.0 --fib 60
     - name: Analyze Stock 2
-      run: python main.py ASSA --period 2y --sl 3.0 --tp 9.0 --fib 60    
+      run: python main.py MBMA --period 2y --sl 3.0 --tp 9.0 --fib 60    
     - name: Analyze Stock 3
-      run: python main.py GOTO --period 2y --sl 3.0 --tp 9.0 --fib 60
+      run: python main.py PYFA --period 2y --sl 3.0 --tp 9.0 --fib 60
 
 
 
