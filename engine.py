@@ -643,7 +643,7 @@ class StockAnalyzer:
 
         pat_stats = context.get('pattern_stats', {})
         if "Success" in pat_stats.get('verdict', ''):
-            score += 1; reasons.append("Historical Pattern Success")
+            score += 1; reasons.append(f"Historical {context['geo']['pattern']} Success") # UPDATED NAME
 
         verdict = "WEAK"
         if score >= 5: verdict = "ELITE SWING SETUP"
@@ -741,7 +741,7 @@ class StockAnalyzer:
         elif "WAIT" in action:
             plan['status'] = "PENDING (Limit)"
             
-            # Volume Breakout Override
+            # 1. Volume Breakout Override
             if vol_breakout['detected']:
                 plan['entry'] = self.adjust_to_tick_size(current_price)
                 plan['status'] = "EXECUTE NOW (Momentum)"
@@ -755,7 +755,7 @@ class StockAnalyzer:
                      plan['take_profit_3r'] = self.adjust_to_tick_size(tp_3r)
                 return plan
 
-            # Low Cheat Override
+            # 2. Low Cheat Override
             if low_cheat['detected']:
                 plan['entry'] = self.adjust_to_tick_size(current_price)
                 plan['status'] = "EARLY ENTRY (Low Cheat)"
@@ -772,13 +772,30 @@ class StockAnalyzer:
             strategy_type = best_strategy.get('strategy', 'None')
             target_price = support 
             
+            # 3. Smart Selection Logic
             if "RSI" in strategy_type or "Stoch" in strategy_type:
+                # Check proximity to Current Price
                 target_fib = 0
                 for _, price in sorted(fib_levels.items(), key=lambda x: x[1], reverse=True):
                     if price < current_price: target_fib = price; break
                 
+                # Proximity Check: If within 2% of Fib or Support, EXECUTE NOW
+                if target_fib > 0 and (current_price - target_fib) / current_price < 0.02:
+                    plan['entry'] = self.adjust_to_tick_size(current_price)
+                    plan['status'] = "EXECUTE NOW (Near Support)"
+                    sl_price = self.adjust_to_tick_size(current_price - (atr * sl_mult))
+                    plan['stop_loss'] = sl_price
+                    plan['take_profit'] = self.adjust_to_tick_size(current_price + (atr * tp_mult))
+                    risk = current_price - sl_price
+                    if risk > 0:
+                         tp_3r = current_price + (risk * 3.0)
+                         plan['take_profit_3r'] = self.adjust_to_tick_size(tp_3r)
+                    return plan
+
+                # Otherwise wait
                 if target_fib > (current_price * 0.85): target_price = target_fib; plan['note'] = "Wait for Fib Support"
                 else: target_price = support; plan['note'] = "Wait for Major Support"
+            
             elif "MA" in strategy_type:
                 target_price = resistance; plan['note'] = "Buy Breakout"
 
