@@ -187,7 +187,7 @@ class StockAnalyzer:
         k = 100 * ((close - lowest_low) / (highest_high - lowest_low))
         d = k.rolling(window=d_period).mean()
         return k, d
-    
+        
     def calc_amihud(self, close, volume, period):
         ret = close.pct_change().abs()
         dol_vol = close * volume
@@ -347,7 +347,31 @@ class StockAnalyzer:
         except Exception: pass
         return res
 
-    # --- RESTORED: LOW CHEAT BACKTESTER ---
+    def _detect_low_cheat_on_slice(self, df_slice):
+        res = {"detected": False}
+        try:
+            if len(df_slice) < 20: return res
+            c0 = df_slice.iloc[-1]
+            vol_ma = df_slice['Volume'].rolling(20).mean().iloc[-1]
+            atr = df_slice['High'].rolling(14).max() - df_slice['Low'].rolling(14).min()
+            vol_dry = c0['Volume'] < vol_ma * 0.8
+            spread_tight = (c0['High'] - c0['Low']) < (atr / 14)
+            recent_high = df_slice['High'].iloc[-20:].max()
+            below_pivot = c0['Close'] < recent_high
+            if vol_dry and spread_tight and below_pivot:
+                res = {"detected": True}
+        except: pass
+        return res
+
+    def detect_low_cheat(self):
+        res = {"detected": False, "msg": ""}
+        try:
+            if self.data_len < 20: return res
+            if self._detect_low_cheat_on_slice(self.df)["detected"]:
+                 res = {"detected": True, "msg": "Valid Low Cheat Setup (Tight + Dry Vol)"}
+        except Exception: pass
+        return res
+
     def backtest_low_cheat_performance(self):
         res = {"accuracy": "N/A", "count": 0, "verdict": "Unproven"}
         try:
@@ -442,33 +466,6 @@ class StockAnalyzer:
             pivots = {"P": p, "R1": r1, "S1": s1}
         except Exception: pass
         return pivots
-
-    # --- HELPER FOR LOW CHEAT BACKTESTING ---
-    def _detect_low_cheat_on_slice(self, df_slice):
-        res = {"detected": False}
-        try:
-            if len(df_slice) < 20: return res
-            c0 = df_slice.iloc[-1]
-            vol_ma = df_slice['Volume'].rolling(20).mean().iloc[-1]
-            atr = df_slice['High'].rolling(14).max() - df_slice['Low'].rolling(14).min()
-            vol_dry = c0['Volume'] < vol_ma * 0.8
-            spread_tight = (c0['High'] - c0['Low']) < (atr / 14) # Approx
-            recent_high = df_slice['High'].iloc[-20:].max()
-            below_pivot = c0['Close'] < recent_high
-            if vol_dry and spread_tight and below_pivot:
-                res = {"detected": True}
-        except: pass
-        return res
-
-    def detect_low_cheat(self):
-        res = {"detected": False, "msg": ""}
-        try:
-            if self.data_len < 20: return res
-            # Use helper to check current state
-            if self._detect_low_cheat_on_slice(self.df)["detected"]:
-                 res = {"detected": True, "msg": "Valid Low Cheat Setup (Tight + Dry Vol)"}
-        except Exception: pass
-        return res
 
     def detect_vcp_pattern(self):
         try:
@@ -705,7 +702,7 @@ class StockAnalyzer:
             "vol_breakout": self.detect_volume_breakout(),
             "sm_predict": self.backtest_smart_money_predictivity(),
             "breakout_behavior": self.backtest_volume_breakout_behavior(),
-            "lc_stats": self.backtest_low_cheat_performance(), # RE-ADDED
+            "lc_stats": self.backtest_low_cheat_performance(), 
             "low_cheat": self.detect_low_cheat()
         }
 
@@ -717,7 +714,7 @@ class StockAnalyzer:
         else: tick = 25
         return round(price / tick) * tick
 
-    def calculate_trade_plan(self, plan_type, action, current_price, atr, support, resistance, best_strategy, fib_levels, pivots, trend_status, low_cheat):
+    def calculate_trade_plan(self, plan_type, action, current_price, atr, support, resistance, best_strategy, fib_levels, pivots, trend_status, low_cheat, vol_breakout):
         plan = {"type": plan_type, "entry": 0, "stop_loss": 0, "take_profit": 0, "risk_reward": "N/A", "status": "ACTIVE"}
         sl_mult = self.config["SL_MULTIPLIER"]
         tp_mult = self.config["TP_MULTIPLIER"]
@@ -744,6 +741,21 @@ class StockAnalyzer:
         elif "WAIT" in action:
             plan['status'] = "PENDING (Limit)"
             
+            # Volume Breakout Override
+            if vol_breakout['detected']:
+                plan['entry'] = self.adjust_to_tick_size(current_price)
+                plan['status'] = "EXECUTE NOW (Momentum)"
+                plan['note'] = "High Volume Accumulation"
+                sl_price = self.adjust_to_tick_size(current_price - (atr * 1.5))
+                plan['stop_loss'] = sl_price
+                plan['take_profit'] = self.adjust_to_tick_size(current_price + (atr * tp_mult))
+                risk = current_price - sl_price
+                if risk > 0:
+                     tp_3r = current_price + (risk * 3.0)
+                     plan['take_profit_3r'] = self.adjust_to_tick_size(tp_3r)
+                return plan
+
+            # Low Cheat Override
             if low_cheat['detected']:
                 plan['entry'] = self.adjust_to_tick_size(current_price)
                 plan['status'] = "EARLY ENTRY (Low Cheat)"
@@ -808,7 +820,7 @@ class StockAnalyzer:
         
         prob_data = self.calculate_probability(best_strategy, ctx, trend_template)
 
-        plan = self.calculate_trade_plan("OPTIMIZED_SWING", action, ctx['price'], ctx['atr'], ctx['support'], ctx['resistance'], best_strategy, ctx['fib_levels'], ctx['pivots'], trend_template['status'], ctx['low_cheat'])
+        plan = self.calculate_trade_plan("OPTIMIZED_SWING", action, ctx['price'], ctx['atr'], ctx['support'], ctx['resistance'], best_strategy, ctx['fib_levels'], ctx['pivots'], trend_template['status'], ctx['low_cheat'], ctx['vol_breakout'])
 
         return {
             "ticker": self.ticker, "name": self.info.get('longName', self.ticker),
