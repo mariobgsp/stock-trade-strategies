@@ -36,7 +36,7 @@ jobs:
     - name: Analyze Stock 1
       run: python main.py ELSA --period 2y --sl 3.0 --tp 9.0 --fib 60
     - name: Analyze Stock 2
-      run: python main.py MBMA --period 2y --sl 3.0 --tp 9.0 --fib 60    
+      run: python main.py BRPT --period 2y --sl 3.0 --tp 9.0 --fib 60    
     - name: Analyze Stock 3
       run: python main.py CDIA --period 2y --sl 3.0 --tp 9.0 --fib 60
     - name: Analyze Stock 4
