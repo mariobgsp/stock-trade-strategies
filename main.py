@@ -36,10 +36,19 @@ def print_report(data):
     print(f"\n--- FUNDAMENTALS ---")
     print(f"Market Cap: Rp {fund.get('market_cap', 0):,.0f}")
     if fund.get('warning'): print(f"⚠️ {fund['warning']}")
-
-    # 3. OPTIMIZED TRADE PLAN (Single Plan)
+    
+    # 3. PROBABILITY & VALIDATION
+    prob = data['probability']
     val = data['validation']
-    plan = data['plans'][0] # Get the single optimized plan
+    
+    print(f"\n--- PREDICTIVE ANALYTICS ---")
+    print(f"Success Prob: {prob['value']:.1f}% ({prob['verdict']})")
+    print(f"Confluence:   {val['score']}/5 ({val['verdict']})")
+    if val['reasons']:
+        print(f"Factors:      {', '.join(val['reasons'])}")
+
+    # 4. OPTIMIZED TRADE PLAN (Single Plan)
+    plan = data['plans'][0] 
     
     print(f"\n--- 🌊 OPTIMIZED SWING PLAN (1-60 Days) ---")
     
@@ -70,7 +79,7 @@ def print_report(data):
             tp_pct_3r = ((plan['take_profit_3r'] - plan['entry']) / plan['entry']) * 100
             print(f"TARGET B:    Rp {plan['take_profit_3r']:,.0f} (+{tp_pct_3r:.1f}%) [Max Profit 1:3]")
 
-    # 4. CONTEXT & PATTERNS
+    # 5. CONTEXT & PATTERNS
     print(f"\n--- MARKET CONTEXT ---")
     ctx = data['context']
     print(f"Smart Money: {ctx['smart_money']}")
@@ -94,14 +103,14 @@ def print_report(data):
             print(f"    ↳ Historical Reliability: {p_stats['accuracy']} ({p_stats['wins']}/{p_stats['count']} Wins)")
             print(f"    ↳ Projection: {p_stats['verdict']}")
 
-    # 5. CONTEXT & PIVOTS
+    # 6. CONTEXT & PIVOTS
     pivots = ctx.get('pivots', {})
     print(f"\n--- PIVOT POINTS (Daily) ---")
     print(f"Pivot (P):   Rp {pivots.get('P', 0):,.0f}")
     print(f"Supp (S1):   Rp {pivots.get('S1', 0):,.0f}")
     print(f"Resis (R1):  Rp {pivots.get('R1', 0):,.0f}")
 
-    # 6. FIBONACCI LEVELS (RESTORED)
+    # 7. FIBONACCI LEVELS (RESTORED)
     print(f"\n--- FIBONACCI KEY LEVELS ---")
     fibs = ctx.get('fib_levels', {})
     curr_p = data['price']
@@ -117,7 +126,7 @@ def print_report(data):
         print(f"0.618 GOLDEN:    Rp {fibs.get('0.618 (Golden)', 0):,.0f} {get_fib_label(fibs.get('0.618 (Golden)', 0))}")
         print(f"Low (1.0):       Rp {fibs.get('1.0 (Low)', 0):,.0f} {get_fib_label(fibs.get('1.0 (Low)', 0))}")
 
-    # 7. NEWS
+    # 8. NEWS
     print(f"\n--- NEWS SENTIMENT ---")
     s_data = data['sentiment']
     print(f"Score: {s_data['score']} ({s_data['sentiment']})")
@@ -136,8 +145,7 @@ def main():
     parser.add_argument('--cmf', type=int, default=DEFAULT_CONFIG['CMF_PERIOD'])
     parser.add_argument('--mfi', type=int, default=DEFAULT_CONFIG['MFI_PERIOD'])
     
-    # NEW: Minimum Volume Value (Liquidity)
-    parser.add_argument('--min_vol', type=int, default=DEFAULT_CONFIG['MIN_DAILY_VOL'], help='Min Daily Transaction Value (IDR)')
+    parser.add_argument('--min_vol', type=int, default=DEFAULT_CONFIG['MIN_DAILY_VOL'])
 
     args = parser.parse_args()
 
@@ -153,7 +161,7 @@ def main():
         "FIB_LOOKBACK_DAYS": args.fib,
         "CMF_PERIOD": args.cmf,
         "MFI_PERIOD": args.mfi,
-        "MIN_DAILY_VOL": args.min_vol # Passed to Engine
+        "MIN_DAILY_VOL": args.min_vol
     }
 
     print(f"\nAnalyzing {args.ticker.upper()}... (Config: {user_config})")
@@ -162,3 +170,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
