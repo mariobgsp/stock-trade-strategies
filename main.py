@@ -86,11 +86,12 @@ def print_report(data):
     # Smart Money Section
     print(f"Smart Money: {ctx['smart_money']}")
     
-    # NEW: BANDAR BEHAVIOR
+    # NEW: BANDAR BEHAVIOR (Dynamic Horizon)
     beh = ctx.get('breakout_behavior', {})
     if beh.get('count', 0) > 0:
+        horizon = beh.get('best_horizon', 5)
         print(f"    ↳ Breakout Behavior: {beh['behavior']}")
-        print(f"    ↳ Win Rate (5 Day Hold): {beh['accuracy']} (Avg Return {beh['avg_return_5d']})")
+        print(f"    ↳ Win Rate ({horizon} Day Hold): {beh['accuracy']} (Avg Return {beh['avg_return_5d']})")
     else:
         print(f"    ↳ Breakout Behavior: No recent samples.")
     
