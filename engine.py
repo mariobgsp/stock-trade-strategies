@@ -13,18 +13,18 @@ from datetime import datetime, timedelta
 # ==========================================
 DEFAULT_CONFIG = {
     "BACKTEST_PERIOD": "2y",
-    "MAX_HOLD_DAYS": 60,
+    "MAX_HOLD_DAYS": 60, # 3 Months (Trading Days)
     "FIB_LOOKBACK_DAYS": 120,
     "RSI_PERIOD": 14,
     "RSI_LOWER": 30,
     "ATR_PERIOD": 14,
-    "SL_MULTIPLIER": 2.5,
-    "TP_MULTIPLIER": 5.0,
+    "SL_MULTIPLIER": 2.5, # Default Wider for Swing Safety
+    "TP_MULTIPLIER": 5.0, 
     "CMF_PERIOD": 20,
     "MFI_PERIOD": 14,
     "VOL_MA_PERIOD": 20,
     "MIN_MARKET_CAP": 500_000_000_000, 
-    "MIN_DAILY_VOL": 1_000_000_000 # Default 1 Billion IDR
+    "MIN_DAILY_VOL": 1_000_000_000
 }
 
 MA_TEST_PAIRS = [(5, 20), (20, 50), (50, 200)] 
@@ -211,6 +211,45 @@ class StockAnalyzer:
         atr_p = self.config["ATR_PERIOD"]
         self.df['ATR'] = self.calc_atr(self.df['High'], self.df['Low'], self.df['Close'], atr_p)
 
+    def check_trend_template(self):
+        res = {"status": "FAIL", "score": 0, "details": []}
+        try:
+            if self.data_len < 260:
+                res["details"].append("Insufficient data for full trend check")
+                return res
+
+            curr = self.df['Close'].iloc[-1]
+            ema_50 = self.df['EMA_50'].iloc[-1]
+            ema_150 = self.df['EMA_150'].iloc[-1]
+            ema_200 = self.df['EMA_200'].iloc[-1]
+            
+            year_high = self.df['High'].iloc[-260:].max()
+            year_low = self.df['Low'].iloc[-260:].min()
+            
+            c1 = curr > ema_150 and curr > ema_200
+            c2 = ema_150 > ema_200
+            slope_200 = self.calc_slope(self.df['EMA_200'], 20)
+            c3 = slope_200 > 0
+            c4 = curr > ema_50
+            c5 = curr >= (1.25 * year_low)
+            c6 = curr >= (0.75 * year_high)
+            
+            score = sum([c1, c2, c3, c4, c5, c6])
+            res["score"] = score
+            
+            if score == 6: res["status"] = "PERFECT UPTREND (Stage 2)"
+            elif score >= 4: res["status"] = "STRONG UPTREND"
+            elif score <= 2: res["status"] = "DOWNTREND / BASE"
+                
+            if c1 and c2: res["details"].append("MA Alignment (Price > 150 > 200)")
+            if c3: res["details"].append("200-Day MA Rising")
+            if c5: res["details"].append("> 25% Off Lows (Momentum)")
+            if c6: res["details"].append("Near 52-Week Highs (Leader)")
+            if not c4: res["details"].append("WARNING: Price below 50 EMA")
+
+        except Exception as e: res["details"].append(f"Error: {str(e)}")
+        return res
+
     def run_backtest_simulation(self, condition_series, hold_days):
         if condition_series is None: return 0.0 
         signals = self.df[condition_series].copy()
@@ -385,8 +424,12 @@ class StockAnalyzer:
         verdict = "Likely Success" if win_rate > 60 else "Likely Fail" if win_rate < 40 else "Coin Flip"
         return { "accuracy": f"{win_rate:.1f}%", "count": total_patterns, "verdict": verdict, "wins": wins }
 
-    # --- VOLUME BREAKOUT WITH VALUE CHECK ---
+    # --- NEW: IMPROVED VOLUME BREAKOUT (Liquidity Check) ---
     def detect_volume_breakout(self):
+        """
+        Detects high volume breakout.
+        Improved: Uses Price * Volume (Transaction Value) to detect real liquidity.
+        """
         res = {"detected": False, "msg": ""}
         try:
             if self.data_len < 2: return res
@@ -433,6 +476,7 @@ class StockAnalyzer:
         rvol = self.df['RVOL'].iloc[-1] if 'RVOL' in self.df.columns else 1.0
         if rvol > 1.2: score += 1; reasons.append("High Volume")
         
+        # Volume Breakout Override
         if context['vol_breakout']['detected']:
              score += 2; reasons.append("Abnormal Accumulation Day")
         
@@ -501,7 +545,7 @@ class StockAnalyzer:
             "squeeze": self.detect_ttm_squeeze(),
             "pivots": self.calculate_pivot_points(),
             "pattern_stats": pattern_stats,
-            "vol_breakout": self.detect_volume_breakout()
+            "vol_breakout": self.detect_volume_breakout() # NEW FIELD
         }
 
     def adjust_to_tick_size(self, price):
