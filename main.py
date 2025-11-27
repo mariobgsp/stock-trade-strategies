@@ -82,7 +82,30 @@ def print_report(data):
     # 5. CONTEXT & PATTERNS
     print(f"\n--- MARKET CONTEXT ---")
     ctx = data['context']
+    
+    # Smart Money Section
     print(f"Smart Money: {ctx['smart_money']}")
+    
+    # NEW: BANDAR BEHAVIOR
+    beh = ctx.get('breakout_behavior', {})
+    if beh.get('count', 0) > 0:
+        print(f"    ↳ Breakout Behavior: {beh['behavior']}")
+        print(f"    ↳ Win Rate (5 Day Hold): {beh['accuracy']} (Avg Return {beh['avg_return_5d']})")
+    else:
+        print(f"    ↳ Breakout Behavior: No recent samples.")
+    
+    # Pattern Backtest Stats
+    sm_stats = ctx.get('sm_predict', {})
+    if sm_stats.get('count', 0) > 0:
+        print(f"    ↳ Smart Money Accuracy: {sm_stats['accuracy']} (Avg Return {sm_stats['avg_return']})")
+    
+    vsa = ctx.get('vsa', {})
+    if vsa.get('detected'):
+        print(f"VSA Signal:  {vsa['msg']}")
+
+    efi = ctx.get('efi', 0)
+    efi_power = "Bulls Power" if efi > 0 else "Bears Power"
+    print(f"Force Index: {efi_power} ({efi:.0f})")
     
     sqz = ctx.get('squeeze', {})
     if sqz.get('detected'): print(f"[!!!] {sqz['msg']}")
