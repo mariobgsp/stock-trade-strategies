@@ -13,13 +13,13 @@ from datetime import datetime, timedelta
 # ==========================================
 DEFAULT_CONFIG = {
     "BACKTEST_PERIOD": "2y",
-    "MAX_HOLD_DAYS": 60,
+    "MAX_HOLD_DAYS": 60, # 3 Months (Trading Days)
     "FIB_LOOKBACK_DAYS": 120,
     "RSI_PERIOD": 14,
     "RSI_LOWER": 30,
     "ATR_PERIOD": 14,
-    "SL_MULTIPLIER": 2.5,
-    "TP_MULTIPLIER": 5.0,
+    "SL_MULTIPLIER": 2.5, # Swing Setting
+    "TP_MULTIPLIER": 5.0, 
     "CMF_PERIOD": 20,
     "MFI_PERIOD": 14,
     "VOL_MA_PERIOD": 20,
@@ -58,6 +58,7 @@ class StockAnalyzer:
         try:
             period = self.config["BACKTEST_PERIOD"]
             self.df = yf.download(self.ticker, period=period, progress=False, auto_adjust=True)
+            
             try:
                 self.market_df = yf.download(self.market_ticker, period=period, progress=False, auto_adjust=True)
                 if isinstance(self.market_df.columns, pd.MultiIndex):
@@ -197,7 +198,7 @@ class StockAnalyzer:
     def prepare_indicators(self):
         if self.df is None or self.df.empty: return
 
-        self.df['EMA_20'] = self.calc_ema(self.df['Close'], 20) # Crucial for Power Trends
+        self.df['EMA_20'] = self.calc_ema(self.df['Close'], 20) # Power Trend
         self.df['EMA_50'] = self.calc_ema(self.df['Close'], 50)
         self.df['EMA_150'] = self.calc_ema(self.df['Close'], 150)
         self.df['EMA_200'] = self.calc_ema(self.df['Close'], 200)
@@ -251,6 +252,7 @@ class StockAnalyzer:
             if score == 6: res["status"] = "PERFECT UPTREND (Stage 2)"
             elif score >= 4: res["status"] = "STRONG UPTREND"
             elif score <= 2: res["status"] = "DOWNTREND / BASE"
+            
             if c1 and c2: res["details"].append("MA Alignment (Price > 150 > 200)")
             if c3: res["details"].append("200-Day MA Rising")
             if c5: res["details"].append("> 25% Off Lows (Momentum)")
@@ -270,52 +272,7 @@ class StockAnalyzer:
         if trade_returns.empty: return 0.0
         return ((trade_returns > 0).sum() / len(trade_returns)) * 100
 
-    # --- NEW: EMA 20 BOUNCE BACKTESTER ---
-    def backtest_ma_support(self, period=20):
-        """
-        Backtests if price bounces off a specific MA (e.g., EMA 20) during an uptrend.
-        """
-        res = {"accuracy": "N/A", "count": 0, "verdict": "Unknown"}
-        try:
-            if self.data_len < 100: return res
-            
-            ma_col = f'EMA_{period}'
-            if ma_col not in self.df.columns: return res
-            
-            # Logic: Price Low touches MA, but Trend (EMA 50) is UP
-            touched_ma = (self.df['Low'] <= self.df[ma_col]) & (self.df['High'] >= self.df[ma_col])
-            uptrend = self.df['Close'] > self.df['EMA_50']
-            
-            signals = touched_ma & uptrend
-            if signals.sum() < 5: return res
-            
-            wins = 0
-            valid_count = 0
-            
-            # Look for bounces within 5 days
-            indices = self.df.index[signals]
-            numeric_indices = [self.df.index.get_loc(i) for i in indices]
-            
-            for idx in numeric_indices:
-                if idx > (self.data_len - 6): continue
-                
-                # Did it bounce? (Price 5 days later > Price at MA)
-                entry = self.df[ma_col].iloc[idx]
-                future_price = self.df['Close'].iloc[idx + 5]
-                
-                if future_price > (entry * 1.02): # > 2% Bounce
-                    wins += 1
-                valid_count += 1
-            
-            if valid_count == 0: return res
-            win_rate = (wins / valid_count) * 100
-            
-            verdict = "STRONG SUPPORT" if win_rate > 65 else "WEAK SUPPORT"
-            res = {"accuracy": f"{win_rate:.1f}%", "count": valid_count, "verdict": verdict}
-            
-        except Exception: pass
-        return res
-
+    # --- BACKTESTERS ---
     def backtest_smart_money_predictivity(self):
         res = {"accuracy": "N/A", "avg_return": 0, "count": 0, "verdict": "Unproven", "best_horizon": 0}
         try:
@@ -332,8 +289,7 @@ class StockAnalyzer:
                 while i < len(indices):
                     idx = indices[i]
                     loc = self.df.index.get_loc(idx)
-                    if loc > (self.data_len - (h + 1)): 
-                        i += 1; continue
+                    if loc > (self.data_len - (h + 1)): i += 1; continue
                     entry = self.df['Close'].iloc[loc]
                     future_high = self.df['High'].iloc[loc+1 : loc+h+1].max()
                     if future_high > (entry * 1.02): wins += 1
@@ -361,12 +317,7 @@ class StockAnalyzer:
             if self.data_len < 100: return res
             min_liq = self.config["MIN_DAILY_VOL"]
             tx_value = self.df['Close'] * self.df['Volume']
-            signals = (
-                (self.df['Close'] > self.df['Open']) & 
-                (self.df['Close'] > self.df['Close'].shift(1)) & 
-                (self.df['Volume'] > self.df['VOL_MA']) & 
-                (tx_value > min_liq)
-            )
+            signals = ((self.df['Close'] > self.df['Open']) & (self.df['Close'] > self.df['Close'].shift(1)) & (self.df['Volume'] > self.df['VOL_MA']) & (tx_value > min_liq))
             breakout_indices = self.df.index[signals]
             if len(breakout_indices) < 5: return res
             best_win_rate = -1
@@ -391,31 +342,6 @@ class StockAnalyzer:
                 behavior = "HONEST (Trend Follower)" if best_win_rate > 60 else "FAKEOUT (Fade the Pop)" if best_win_rate < 40 else "MIXED / CHOPPY"
                 best_stats["behavior"] = behavior
                 res = best_stats
-        except Exception: pass
-        return res
-
-    def _detect_low_cheat_on_slice(self, df_slice):
-        res = {"detected": False}
-        try:
-            if len(df_slice) < 20: return res
-            c0 = df_slice.iloc[-1]
-            vol_ma = df_slice['Volume'].rolling(20).mean().iloc[-1]
-            atr = df_slice['High'].rolling(14).max() - df_slice['Low'].rolling(14).min()
-            vol_dry = c0['Volume'] < vol_ma * 0.8
-            spread_tight = (c0['High'] - c0['Low']) < (atr / 14)
-            recent_high = df_slice['High'].iloc[-20:].max()
-            below_pivot = c0['Close'] < recent_high
-            if vol_dry and spread_tight and below_pivot:
-                res = {"detected": True}
-        except: pass
-        return res
-
-    def detect_low_cheat(self):
-        res = {"detected": False, "msg": ""}
-        try:
-            if self.data_len < 20: return res
-            if self._detect_low_cheat_on_slice(self.df)["detected"]:
-                 res = {"detected": True, "msg": "Valid Low Cheat Setup (Tight + Dry Vol)"}
         except Exception: pass
         return res
 
@@ -465,6 +391,58 @@ class StockAnalyzer:
             win_rate = (wins / count) * 100
             verdict = "GOLDEN ZONE" if win_rate > 65 else "WEAK SUPPORT" if win_rate < 40 else "NEUTRAL"
             res = {"accuracy": f"{win_rate:.1f}%", "count": count, "verdict": verdict}
+        except Exception: pass
+        return res
+
+    def backtest_ma_support(self, period=20):
+        res = {"accuracy": "N/A", "count": 0, "verdict": "Unknown"}
+        try:
+            if self.data_len < 100: return res
+            ma_col = f'EMA_{period}'
+            if ma_col not in self.df.columns: return res
+            touched_ma = (self.df['Low'] <= self.df[ma_col]) & (self.df['High'] >= self.df[ma_col])
+            uptrend = self.df['Close'] > self.df['EMA_50']
+            signals = touched_ma & uptrend
+            if signals.sum() < 5: return res
+            wins, valid_count = 0, 0
+            indices = self.df.index[signals]
+            numeric_indices = [self.df.index.get_loc(i) for i in indices]
+            for idx in numeric_indices:
+                if idx > (self.data_len - 6): continue
+                entry = self.df[ma_col].iloc[idx]
+                future_price = self.df['Close'].iloc[idx + 5]
+                if future_price > (entry * 1.02): wins += 1
+                valid_count += 1
+            if valid_count == 0: return res
+            win_rate = (wins / valid_count) * 100
+            verdict = "STRONG SUPPORT" if win_rate > 65 else "WEAK SUPPORT"
+            res = {"accuracy": f"{win_rate:.1f}%", "count": valid_count, "verdict": verdict}
+        except Exception: pass
+        return res
+
+    # --- DETECTION HELPERS ---
+    def _detect_low_cheat_on_slice(self, df_slice):
+        res = {"detected": False}
+        try:
+            if len(df_slice) < 20: return res
+            c0 = df_slice.iloc[-1]
+            vol_ma = df_slice['Volume'].rolling(20).mean().iloc[-1]
+            atr = df_slice['High'].rolling(14).max() - df_slice['Low'].rolling(14).min()
+            vol_dry = c0['Volume'] < vol_ma * 0.8
+            spread_tight = (c0['High'] - c0['Low']) < (atr / 14)
+            recent_high = df_slice['High'].iloc[-20:].max()
+            below_pivot = c0['Close'] < recent_high
+            if vol_dry and spread_tight and below_pivot:
+                res = {"detected": True}
+        except: pass
+        return res
+
+    def detect_low_cheat(self):
+        res = {"detected": False, "msg": ""}
+        try:
+            if self.data_len < 20: return res
+            if self._detect_low_cheat_on_slice(self.df)["detected"]:
+                 res = {"detected": True, "msg": "Valid Low Cheat Setup (Tight + Dry Vol)"}
         except Exception: pass
         return res
 
@@ -594,24 +572,6 @@ class StockAnalyzer:
                 res["msg"] += f" Apex in ~{int(res['apex_dist'])} days."
         return res
 
-    def backtest_pattern_reliability(self):
-        if self.data_len < 200: return {"accuracy": "N/A", "count": 0}
-        wins = 0
-        total_patterns = 0
-        for i in range(100, self.data_len - 20, 5):
-            slice_df = self.df.iloc[:i]
-            res = self._detect_geometry_on_slice(slice_df)
-            if res["pattern"] != "None":
-                total_patterns += 1
-                future_window = self.df.iloc[i : i+20]
-                entry_price = slice_df['Close'].iloc[-1]
-                max_price = future_window['High'].max()
-                if max_price > (entry_price * 1.03): wins += 1
-        if total_patterns == 0: return {"accuracy": "N/A", "count": 0}
-        win_rate = (wins / total_patterns) * 100
-        verdict = "Likely Success" if win_rate > 60 else "Likely Fail" if win_rate < 40 else "Coin Flip"
-        return { "accuracy": f"{win_rate:.1f}%", "count": total_patterns, "verdict": verdict, "wins": wins }
-
     def detect_volume_breakout(self):
         res = {"detected": False, "msg": ""}
         try:
@@ -715,7 +675,8 @@ class StockAnalyzer:
         if context['squeeze']['detected']: score += 2; reasons.append("TTM Squeeze Firing")
 
         pat_stats = context.get('pattern_stats', {})
-        if "Success" in pat_stats.get('verdict', ''):
+        # FIX: Now safely checks for the specific pattern
+        if "Success" in pat_stats.get('verdict', '') and context['geo']['pattern'] != "None":
             score += 1; reasons.append(f"Historical {context['geo']['pattern']} Success")
 
         verdict = "WEAK"
@@ -760,25 +721,30 @@ class StockAnalyzer:
             
             if amihud < 0.0000001 and money_flow == "RETAIL NOISE / Indecision":
                  money_flow += " (Liquid / Stealth)"
+        
+        geo_status = self.detect_geometric_patterns()
+        pattern_stats = {}
+        if geo_status["pattern"] != "None":
+            pattern_stats = self.backtest_pattern_reliability()
 
         return {
             "price": last_price, "support": support, "resistance": resistance,
             "dist_support": dist_supp, "fib_levels": fibs, "trend": trend,
             "atr": atr, "obv_status": obv_status, "smart_money": money_flow,
-            "vcp": self.detect_vcp_pattern(), "geo": self.detect_geometric_patterns(),
+            "vcp": self.detect_vcp_pattern(), "geo": geo_status,
             "candle": self.detect_candle_patterns(), "vsa": self.detect_vsa_anomalies(),
             "efi": self.df['EFI'].iloc[-1] if 'EFI' in self.df.columns else 0,
             "fundamental": self.check_fundamentals(),
             "squeeze": self.detect_ttm_squeeze(),
             "pivots": self.calculate_pivot_points(),
-            "pattern_stats": self.backtest_pattern_reliability(),
+            "pattern_stats": pattern_stats,
             "vol_breakout": self.detect_volume_breakout(),
             "sm_predict": self.backtest_smart_money_predictivity(),
             "breakout_behavior": self.backtest_volume_breakout_behavior(),
             "lc_stats": self.backtest_low_cheat_performance(), 
             "low_cheat": self.detect_low_cheat(),
             "fib_stats": self.backtest_fib_bounce(),
-            "ma_stats": self.backtest_ma_support(20) # New EMA 20 Backtest
+            "ma_stats": self.backtest_ma_support(20)
         }
 
     def adjust_to_tick_size(self, price):
@@ -845,13 +811,20 @@ class StockAnalyzer:
                 return plan
             
             # 3. Power Trend Override (EMA 20)
-            # If Trend is STRONG (Stage 2) and EMA 20 is proven reliable > 65%
             if "PERFECT" in trend_status and "STRONG" in ma_stats['verdict']:
                 ema20 = self.df['EMA_20'].iloc[-1]
-                if ema20 > (current_price * 0.9): # Close enough
+                if abs(current_price - ema20) / current_price < 0.02:
+                    plan['entry'] = self.adjust_to_tick_size(current_price)
+                    plan['status'] = "EXECUTE NOW (Power Trend Dip)"
+                    sl_price = self.adjust_to_tick_size(ema20 - (atr * 2.0))
+                    plan['stop_loss'] = sl_price
+                    plan['take_profit'] = self.adjust_to_tick_size(ema20 + (atr * tp_mult))
+                    risk = current_price - sl_price
+                    if risk > 0: tp_3r = current_price + (risk * 3.0); plan['take_profit_3r'] = self.adjust_to_tick_size(tp_3r)
+                    return plan
+                elif ema20 > (current_price * 0.9):
                     plan['entry'] = self.adjust_to_tick_size(ema20)
                     plan['note'] = "Wait for EMA 20 Bounce (Power Trend)"
-                    # ... calculation logic ...
                     sl_price = self.adjust_to_tick_size(ema20 - (atr * 2.0))
                     plan['stop_loss'] = sl_price
                     plan['take_profit'] = self.adjust_to_tick_size(ema20 + (atr * tp_mult))
@@ -869,7 +842,7 @@ class StockAnalyzer:
                 for _, price in sorted(fib_levels.items(), key=lambda x: x[1], reverse=True):
                     if price < current_price: target_fib = price; break
                 
-                # Proximity Check: If within 2% of Fib or Support, EXECUTE NOW
+                # Proximity Check (2%)
                 if target_fib > 0 and (current_price - target_fib) / current_price < 0.02:
                     plan['entry'] = self.adjust_to_tick_size(current_price)
                     plan['status'] = "EXECUTE NOW (Near Support)"
@@ -884,8 +857,12 @@ class StockAnalyzer:
 
                 if target_fib > (current_price * 0.85): target_price = target_fib; plan['note'] = "Wait for Fib Support"
                 else: target_price = support; plan['note'] = "Wait for Major Support"
+            
             elif "MA" in strategy_type:
-                target_price = resistance; plan['note'] = "Buy Breakout"
+                # Momentum Priority: Breakout or S1
+                s1 = pivots.get("S1", 0)
+                if s1 > (current_price * 0.9): target_price = s1; plan['note'] = "Wait for Pivot S1"
+                else: target_price = resistance; plan['note'] = "Buy Breakout"
 
             plan['entry'] = self.adjust_to_tick_size(target_price)
             if plan['entry'] > 0:
