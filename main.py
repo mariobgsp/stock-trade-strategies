@@ -87,6 +87,11 @@ def print_report(data):
     
     # Smart Money Section
     print(f"Smart Money: {ctx['smart_money']}")
+    # Show Indicators for Transparency
+    ms = ctx.get('money_stats', {})
+    if ms:
+        print(f"    [CMF: {ms['CMF']:.2f}] [MFI: {ms['MFI']:.0f}] [RVOL: {ms['RVOL']:.1f}x]")
+        print(f"    [VWAP: Rp {ms['VWAP']:.0f}] [AMIHUD: {ms['AMIHUD']:.8f}]")
     
     # BANDAR BEHAVIOR (Dynamic Horizon)
     beh = ctx.get('breakout_behavior', {})
@@ -107,10 +112,10 @@ def print_report(data):
     if lc_stats.get('count', 0) > 0:
         print(f"    ↳ Low Cheat Accuracy: {lc_stats['accuracy']} ({lc_stats['verdict']})")
 
-    # EMA 20 Stats
+    # EMA Backtest Stats (NEW)
     ma_stats = ctx.get('ma_stats', {})
     if ma_stats.get('count', 0) > 0:
-        print(f"    ↳ EMA 20 Bounce Reliability: {ma_stats['accuracy']} ({ma_stats['verdict']})")
+        print(f"    ↳ Best Moving Avg Support: {ma_stats['best_ma']} (Accuracy: {ma_stats['accuracy']})")
 
     vsa = ctx.get('vsa', {})
     if vsa.get('detected'):
@@ -153,7 +158,7 @@ def print_report(data):
     # 7. FIBONACCI LEVELS (RESTORED)
     print(f"\n--- FIBONACCI KEY LEVELS ---")
     fibs = ctx.get('fib_levels', {})
-    fib_stats = ctx.get('fib_stats', {}) # NEW
+    fib_stats = ctx.get('fib_stats', {}) 
 
     curr_p = data['price']
     if fibs:
