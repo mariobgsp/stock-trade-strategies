@@ -1,115 +1,147 @@
-# **Simple IHSG Stock Validator (Advanced CLI)**
+# 🇮🇩 IHSG Stock Validator 
 
-A sophisticated, modular Command Line Interface (CLI) tool designed for the Indonesian Stock Exchange (IDX). It combines algorithmic backtesting, advanced pattern recognition (VCP, Triangles), institutional money flow analysis ("Bandarmology"), and dynamic risk management to validate trading ideas.
+**Don't just guess. Validate with Math & Smart Money Flow.**
 
-## **🚀 Key Features**
+A professional-grade Command Line Interface (CLI) trading tool specifically engineered for the Indonesian Stock Exchange (IDX).  
+This tool combines Quantitative Backtesting, Smart Money (Bandarmology) Forensics, and Algorithmic Pattern Recognition to generate institutional-quality trade plans.
 
-### **1\. 🧠 Deep Grid Search Optimization**
+---
 
-Instead of guessing parameters, the engine runs a simulation on historical data (default: last 2 years) to find what *actually* works for a specific stock.
+## 🌟 What's New in V3.1
+- **Advanced Bandarmology VSA**: Detects *Stopping Volume* (Absorption) and *No Demand* signals using Volume Spread Analysis.
+- **Buying Pressure Meter**: Visualizes the dominance of Buyers vs Sellers over the last 20 days.
+- **Big Money Spikes**: Tracks days where volume exceeded 1.25× average (Accumulation vs Distribution count).
+- **A/D Line Divergence**: Detects hidden accumulation when price drops but Money Flow rises.
+- **Adaptive IPO Mode**: Adjusts trend filters for stocks listed < 260 days (e.g., "IPO Power Trend").
+- **Final Verdict Engine**: Produces a clear recommendation: `WATCHLIST`, `WAIT`, or `AVOID`.
 
-* **Multi-Strategy Testing:** Automatically tests RSI Reversal, Moving Average Momentum, and Stochastic Oscillator strategies.  
-* **Hold Period Optimization:** Iterates through holding periods from **1 to 20 days** to find the statistical "sweet spot" for exits.  
-* **Active vs. Historical:** Distinguishes between the historically best strategy and strategies that are *actionable today*.
+---
 
-### **2\. 🛡️ Smart Trade Plan & Risk Management**
+## 🚀 Key Features
 
-Generates a concrete, actionable trading plan based on **ATR (Average True Range)** volatility, avoiding arbitrary percentage stops.
+### 1. 🏦 Smart Money Forensics (The "Bandar" Detector)
+Composite index of 5 institutional footprints:
+- VSA Anomalies: Churning, Stopping Volume, No Demand.
+- Net Volume Pressure: Ratio of Up-Volume vs Down-Volume.
+- VWAP Anchoring: Detects institutional defence of price.
+- NVI (Negative Volume Index): Tracks "Smart Money" on low-volume days.
+- Accumulation/Distribution (A/D) Line: Spots flow divergences.
 
-* **Dynamic Stop Loss:** Automatically set at Entry \- (Multiplier x ATR) to avoid market noise.  
-* **Dynamic Take Profit:** Set at Entry \+ (Multiplier x ATR) for a healthy Risk-to-Reward ratio.  
-* **Smart "Wait" Logic:** If the signal is "WAIT", the tool calculates a **Recommended Limit Order** price based on Fibonacci levels or Support/Resistance.
+### 2. 🛡️ Professional Risk Management (3R)
+Generates a full trade plan:
+- Position sizing calculated from your IDR balance and risk %.
+- Dynamic Stop Loss using ATR to avoid market noise.
+- Reward-to-Risk targeting minimum 1:3.
 
-### **3\. 📉 Advanced Pattern Recognition**
+### 3. 🧠 Hybrid Strategy Engine
+Prioritized setups:
+1. Rectangle/Box Breakout (momentum)
+2. Box Support Bounce (value play)
+3. Low Cheat (VCP) (early entry in trend)
+4. Minervini Trend Follow (Stage 2 trend)
 
-Uses custom algorithms to detect complex price structures:
+### 4. 🔎 Algorithmic Backtesting (Self-Optimizing)
+Learns from ticker history:
+- Breakout reliability
+- Smart Money signal accuracy on that ticker
+- Which moving averages the stock respects (20/50/200)
 
-* **VCP (Volatility Contraction Pattern):** Detects if price volatility is tightening (a la Mark Minervini), signaling a potential explosive move.  
-* **Geometric Patterns:** Identifies Symmetrical, Ascending, and Descending Triangles, as well as Bullish Pennants using slope analysis of recent pivots.
+### 5. 📉 Pattern Recognition
+- VCP (Volatility Contraction Pattern)
+- TTM Squeeze (Bollinger inside Keltner)
+- Geometric shapes: Triangles (ascending, descending, symmetrical)
 
-### **4\. 🏦 Smart Money Analysis (Bandarmology)**
+---
 
-Detects institutional activity using a combination of volume indicators:
+## 🛠️ Installation
 
-* **Chaikin Money Flow (CMF):** Measures buying/selling pressure based on close price relative to high/low.  
-* **Money Flow Index (MFI):** Volume-weighted RSI to detect overheated buying.  
-* **Volume Spikes:** Alerts on abnormal volume (\> 2x average).  
-* **OBV Divergence:** Detects hidden Accumulation (Price down, Volume up).
+```bash
+# Clone or download the repository
+git clone <repo-url>
+cd ihsg-ultimate-scanner
 
-### **5\. 🔢 Context & Sentiment**
+# Install Python dependencies
+pip install yfinance pandas numpy pandas_ta textblob beautifulsoup4 requests
+```
 
-* **Fibonacci Retracement:** Auto-calculates the 120-day Swing High/Low to find the **0.618 Golden Ratio** support level.  
-* **Adaptive Trend Filter:** Automatically switches between EMA 200, EMA 50, or EMA 20 depending on how long the stock has been listed (IPO safe).  
-* **Hybrid News Sentiment:** Fetches news via Yahoo Finance (primary) or Google RSS (fallback) and analyzes sentiment using NLP.
+---
 
-## **🛠️ Installation**
+## 🖥️ Usage
 
-1. **Clone the repository**:  
-   git clone \[https://github.com/yourusername/ihsg-stock-validator.git\](https://github.com/yourusername/ihsg-stock-validator.git)  
-   cd ihsg-stock-validator
+### Quick Start
+Analyze a stock using default settings (IDR 100,000,000 balance, 1% risk):
 
-2. **Install dependencies**:  
-   pip install \-r requirements.txt
-
-**Requirements:** Python 3.10+ is recommended.
-
-## **🖥️ Usage**
-
-### **1\. Standard Mode (Interactive or Direct)**
-
-Run the script without arguments to be prompted, or pass a ticker directly.
-
+```bash
 python main.py BBCA
+```
 
-### **2\. Custom Mode (Modular Configuration)**
+### Power User Mode
+Customize account size and risk:
 
-You can override almost any parameter using command-line flags.
+```bash
+# Example: 500 Juta Balance, Risking 2% per trade
+python main.py BMRI --balance 500000000 --risk 2.0
+```
 
-**Example: Scalper Mode (Short term, tight stop)**
+### Full Argument List
 
-python main.py GOTO \--period 6mo \--sl 1.5 \--tp 2.0 \--hold 5
+| Flag        | Description                                   | Default           |
+|-------------|-----------------------------------------------|-------------------|
+| ticker      | Stock Code (e.g., BBRI, GOTO)                 | **Required**      |
+| --balance   | Your Account Balance (IDR)                    | 100,000,000       |
+| --risk      | Risk per trade (%)                            | 1.0               |
+| --period    | Data lookback period                          | 2y                |
+| --sl        | Stop Loss ATR Multiplier                      | 2.5               |
+| --tp        | Take Profit ATR Multiplier                    | 5.0               |
+| --min_vol   | Minimum daily transaction (IDR)               | 1,000,000,000     |
 
-**Example: Swing Trader Mode (Long term, loose stop)**
+---
 
-python main.py TLKM \--period 5y \--sl 3.0 \--tp 6.0 \--fib 200
+## 📊 Sample Output Preview
 
-**Example: Smart Money Focus (Sensitive Flow)**
+```
+STOCK: Bank Central Asia Tbk (BBCA)
+PRICE: Rp 10,200 (🟢 +1.50%)
 
-python main.py BREN \--cmf 10 \--mfi 10
+✅ LIQUIDITY CHECK
+   Healthy Liquidity (525.50B IDR)
 
-### **🔧 Available Arguments**
+✅ TREND HEALTH
+   Status: PERFECT UPTREND (Stage 2) (Score: 6/6)
+   [EMA50: 9,850] | [EMA200: 9,100]
 
-| Flag | Description | Default |
-| :---- | :---- | :---- |
-| ticker | Stock Ticker (e.g., BBCA, ANTM) | None |
-| \--period | Backtest timeframe (e.g., 1y, 2y, 5y) | 2y |
-| \--hold | Max holding days for Grid Search | 20 |
-| \--sl | Stop Loss ATR Multiplier | 2.0 |
-| \--tp | Take Profit ATR Multiplier | 3.0 |
-| \--rsi | RSI Period length | 14 |
-| \--fib | Fibonacci lookback days | 120 |
-| \--cmf | Chaikin Money Flow period | 20 |
-| \--mfi | Money Flow Index period | 14 |
+🔹 SMART MONEY (Bandarmology Proxy)
+   Status: BULLISH (Accumulation)
+   Pressure:  [████████████░░░░░░░░] 60.5% Buy Vol
+   Big Moves: 3 Accumulation Days vs 1 Distribution Days
+   - VSA: Stopping Volume (Potential Reversal)
+   - Price > VWAP (Inst. Support)
 
-## **📖 Understanding the Report**
+🚀 TRADE PLAN (3R)
+   ACTION:      BUY (EXECUTE (Box Breakout))
+   ENTRY:       Rp 10,200
+   STOP LOSS:   Rp 9,900
+   TARGET (3R): Rp 11,100
 
-* **ACTION:** The primary recommendation (BUY ON DIP, BUY MOMENTUM, or WAIT).  
-* **SMART TRADE PLAN:**  
-  * **EXECUTE NOW:** Conditions are met, enter at market.  
-  * **PENDING:** Conditions not met yet. Set a Limit Order at the "WAIT FOR" price (usually a Fibonacci or Support level).  
-* **CHART PATTERNS:**  
-  * **\[+\] VCP DETECTED:** Volatility has contracted (e.g., from 10% drop to 4% drop). Watch for a breakout.  
-  * **\[+\] GEOMETRY:** A Triangle or Pennant is forming.  
-* **SMART MONEY:**  
-  * **INSTITUTIONAL BUYING:** Strong accumulation detected.  
-  * **INSTITUTIONAL SELLING:** Distribution detected.  
-  * **RETAIL NOISE:** No clear institutional footprint.
+   --- POSITION SIZING (Bal: 100 Jt) ---
+   🛒 BUY:      33 LOTS
+   🔥 Risk:     Rp 1,000,000 (1.0%)
 
-## **⚠️ Disclaimer**
+🏁 FINAL VERDICT
+   Signal Strength: ELITE SWING SETUP (Score: 5)
+   👉 RECOMMENDATION: WATCHLIST / BUY
+```
 
-For Educational Purposes Only.  
-This software is an algorithmic analysis tool. It calculates probabilities based on historical data. It does not guarantee future profits.
+---
 
-* **Always Do Your Own Research (DYOR).**  
-* **Market Conditions Change:** A strategy with a 90% historical win rate can fail today if news/macroeconomics shifts.  
-* The creator is not responsible for any financial losses incurred from using this tool.
+## ⚠️ Disclaimer
+For **educational purposes only**. This tool uses mathematical probabilities and algorithmic proxies for "Bandarmology" (volume/price heuristics) and **does not** represent actual brokerage data. Always do your own research and consult licensed financial professionals before trading.
+
+---
+
+## ❤️ Built With
+- Python
+- yfinance, pandas, numpy, pandas_ta, textblob
+- Requests & BeautifulSoup for auxiliary data
+
+---

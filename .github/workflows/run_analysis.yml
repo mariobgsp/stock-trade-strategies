@@ -5,6 +5,7 @@ on:
     branches: 
       - "run-analysis"
       - "main"
+      - "feature/sm-detection"
     paths:
       - '**.py'             
       - 'requirements.txt'   
@@ -32,5 +33,18 @@ jobs:
     # - name: Analyze BBCA (Standard)
     #   run: python main.py BBCA
 
-    - name: Analyze ELSA (Custom Flag Test)
-      run: python main.py LSIP --period 2y --sl 1.0 --tp 6.0 --fib 60 --cmf 10 --mfi 10
+    # Analyze with Custom Flag
+    - name: Analyze Stock 1
+      run: python main.py ELSA --period 2y --sl 3.0 --tp 9.0 --fib 60
+    - name: Analyze Stock 2
+      run: python main.py MBMA --period 2y --sl 3.0 --tp 9.0 --fib 60    
+    - name: Analyze Stock 3
+      run: python main.py ADMR --period 2y --sl 3.0 --tp 9.0 --fib 60
+    - name: Analyze Stock 4
+      run: python main.py AVIA --period 2y --sl 3.0 --tp 9.0 --fib 60
+    - name: Analyze Stock 5
+      run: python main.py MEDC --period 2y --sl 3.0 --tp 9.0 --fib 60
+
+
+
+
