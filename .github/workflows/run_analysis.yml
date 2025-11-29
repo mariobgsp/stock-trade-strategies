@@ -5,6 +5,7 @@ on:
     branches: 
       - "run-analysis"
       - "main"
+      - "feature/sm-detection"
     paths:
       - '**.py'             
       - 'requirements.txt'   
