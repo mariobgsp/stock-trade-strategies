@@ -199,6 +199,14 @@ class StockAnalyzer:
         ad_line = mfv.cumsum()
         return ad_line
 
+    # --- NEW: Price Volume Trend (PVT) ---
+    def calc_pvt(self, close, volume):
+        # PVT = Cumulative ( %Change * Volume )
+        # More sensitive than OBV for large moves
+        pct_change = close.pct_change().fillna(0)
+        pvt = (pct_change * volume).cumsum()
+        return pvt
+
     def prepare_indicators(self):
         if self.df is None or self.df.empty: return
 
@@ -216,6 +224,9 @@ class StockAnalyzer:
 
         self.df['OBV'] = self.calc_obv(self.df['Close'], self.df['Volume'])
         self.df['AD_Line'] = self.calc_ad_line(self.df['High'], self.df['Low'], self.df['Close'], self.df['Volume'])
+        
+        # --- NEW: PVT Indicator ---
+        self.df['PVT'] = self.calc_pvt(self.df['Close'], self.df['Volume'])
         
         self.df['CMF'] = self.calc_cmf(self.df['High'], self.df['Low'], self.df['Close'], self.df['Volume'], self.config["CMF_PERIOD"])
         self.df['MFI'] = self.calc_mfi(self.df['High'], self.df['Low'], self.df['Close'], self.df['Volume'], self.config["MFI_PERIOD"])
@@ -308,7 +319,6 @@ class StockAnalyzer:
         except Exception as e: res["details"].append(f"Error: {str(e)}")
         return res
 
-    # --- RESTORED: ALL BACKTEST FUNCTIONS ---
     def run_backtest_simulation(self, condition_series, hold_days):
         if condition_series is None: return 0.0 
         signals = self.df[condition_series].copy()
@@ -504,7 +514,6 @@ class StockAnalyzer:
         except Exception: pass
         return res
 
-    # --- BACKTEST PATTERN RELIABILITY (RESTORED) ---
     def backtest_pattern_reliability(self):
         if self.data_len < 200: return {"accuracy": "N/A", "count": 0}
         wins = 0
@@ -745,7 +754,6 @@ class StockAnalyzer:
         except: pass
         return res
 
-    # --- RESTORED FUNCTIONS ---
     def detect_candle_patterns(self):
         res = {"pattern": "None", "sentiment": "Neutral"}
         try:
@@ -829,6 +837,10 @@ class StockAnalyzer:
                 elif ad_slope > 0:
                      score += 1; res['signals'].append("A/D Line Rising (Buying Pressure)")
 
+            if 'PVT' in self.df.columns and len(self.df) > 5:
+                pvt_slope = self.calc_slope(self.df['PVT'], 5)
+                if pvt_slope > 0: score += 1; res['signals'].append("PVT Rising (Positive Volume Trend)")
+
             if buy_pressure > 60:
                  score += 1; res['signals'].append(f"Buying Pressure Dominant ({buy_pressure:.0f}%)")
             elif buy_pressure < 40:
@@ -840,9 +852,14 @@ class StockAnalyzer:
             is_up = c0['Close'] > c0['Open']
             
             lower_wick = min(c0['Open'], c0['Close']) - c0['Low']
+            body = abs(c0['Close'] - c0['Open'])
+            
             if is_down and c0['RVOL'] > 1.5 and lower_wick > (0.4 * spread):
                  score += 2; res['signals'].append("VSA: Stopping Volume (Potential Reversal)")
             
+            if is_down and c0['RVOL'] > 1.5 and body < (0.3 * spread):
+                 score += 2; res['signals'].append("Wyckoff: Effort vs Result (Bullish)")
+
             if is_up and c0['RVOL'] < 0.7:
                  score -= 1; res['signals'].append("VSA: No Demand (Weak Rally)")
 
