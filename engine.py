@@ -39,7 +39,6 @@ OBV_LOOKBACK_DAYS = 10
 TREND_EMA_DEFAULT = 200
 
 # Financial Dictionary for Better Sentiment
-# Indonesian Financial Sentiment Dictionary
 FIN_BULLISH = {
     'naik', 'lonjakan', 'rekor', 'laba', 'untung', 'dividen', 'buyback', 
     'akuisisi', 'merger', 'tumbuh', 'menguat', 'bullish', 'hijau', 
@@ -53,6 +52,7 @@ FIN_BEARISH = {
     'terendah', 'boncos', 'suspen', 'gugat', 'sanksi', 'denda',
     'penggelapan', 'korupsi', 'phk', 'defisit'
 }
+
 class StockAnalyzer:
     def __init__(self, ticker, user_config=None):
         self.ticker = self._format_ticker(ticker)
@@ -97,7 +97,6 @@ class StockAnalyzer:
     def analyze_news_sentiment(self):
         headlines = []
         try:
-            # 1. Google News RSS
             query = self.ticker.replace(".JK", "")
             long_name = self.info.get('longName', '')
             if long_name and long_name != self.ticker:
@@ -113,7 +112,6 @@ class StockAnalyzer:
                 self.news_analysis = {"sentiment": "Neutral", "score": 0, "headlines": []}
                 return
 
-            # 2. Dictionary Analysis
             score = 0
             for title in headlines:
                 t_lower = title.lower()
@@ -194,11 +192,9 @@ class StockAnalyzer:
         amihud = (ret / dol_vol) * 1000000000
         return amihud.rolling(window=period).mean()
 
-    # --- NEW: Accumulation/Distribution Line ---
     def calc_ad_line(self, high, low, close, volume):
-        # Money Flow Multiplier = [(Close  -  Low) - (High - Close)] /(High - Low) 
         mfm = ((close - low) - (high - close)) / (high - low)
-        mfm = mfm.fillna(0) # Handle divide by zero
+        mfm = mfm.fillna(0) 
         mfv = mfm * volume
         ad_line = mfv.cumsum()
         return ad_line
@@ -206,7 +202,6 @@ class StockAnalyzer:
     def prepare_indicators(self):
         if self.df is None or self.df.empty: return
 
-        # MAs
         self.df['EMA_20'] = self.calc_ema(self.df['Close'], 20)
         self.df['EMA_50'] = self.calc_ema(self.df['Close'], 50)
         self.df['EMA_100'] = self.calc_ema(self.df['Close'], 100)
@@ -214,15 +209,12 @@ class StockAnalyzer:
         self.df['EMA_200'] = self.calc_ema(self.df['Close'], 200)
         self.active_trend_col = 'EMA_200'
 
-        # Momentum
         self.df['RSI'] = self.calc_rsi(self.df['Close'], self.config["RSI_PERIOD"])
         k, d = self.calc_stoch(self.df['High'], self.df['Low'], self.df['Close'], STOCH_K_PERIOD, STOCH_D_PERIOD)
         self.df[f"STOCHk"] = k
         self.df[f"STOCHd"] = d
 
-        # Volume & Smart Money Proxies
         self.df['OBV'] = self.calc_obv(self.df['Close'], self.df['Volume'])
-        # --- NEW: A/D Line ---
         self.df['AD_Line'] = self.calc_ad_line(self.df['High'], self.df['Low'], self.df['Close'], self.df['Volume'])
         
         self.df['CMF'] = self.calc_cmf(self.df['High'], self.df['Low'], self.df['Close'], self.df['Volume'], self.config["CMF_PERIOD"])
@@ -233,7 +225,6 @@ class StockAnalyzer:
         self.df['EFI'] = self.calc_force_index(self.df['Close'], self.df['Volume'], 13)
         self.df['AMIHUD'] = self.calc_amihud(self.df['Close'], self.df['Volume'], 20)
 
-        # VWAP & NVI
         tp = (self.df['High'] + self.df['Low'] + self.df['Close']) / 3
         self.df['VWAP'] = (tp * self.df['Volume']).rolling(20).sum() / self.df['Volume'].rolling(20).sum()
         
@@ -250,10 +241,8 @@ class StockAnalyzer:
         self.df['NVI'] = pd.Series(nvi, index=self.df.index)
         self.df['NVI_EMA'] = self.df['NVI'].ewm(span=255).mean()
 
-        # ATR
         self.df['ATR'] = self.calc_atr(self.df['High'], self.df['Low'], self.df['Close'], self.config["ATR_PERIOD"])
 
-    # --- NEW: LIQUIDITY CHECK ---
     def check_liquidity_quality(self):
         try:
             adtv = self.df['TxValue'].rolling(20).mean().iloc[-1]
@@ -264,13 +253,9 @@ class StockAnalyzer:
         except: return {"status": "UNKNOWN", "msg": "Calc Error", "adtv": 0}
 
     def check_trend_template(self):
-        # Updated to handle IPOs and stocks between 200-260 days
         res = {"status": "FAIL", "score": 0, "max_score": 6, "details": []}
         try:
-            # Check for valid 200 MA (Requires ~200 days)
             has_200 = self.data_len >= 200
-            
-            # If extremely new (<50 days), we can't do much
             if self.data_len < 50:
                  res["details"].append("Insufficient data (Need > 50 days)")
                  return res
@@ -278,33 +263,24 @@ class StockAnalyzer:
             curr = self.df['Close'].iloc[-1]
             ema_50 = self.df['EMA_50'].iloc[-1]
             
-            # --- IPO MODE (50 < Data < 200) ---
             if not has_200:
                 res["status"] = "IPO / NEW LISTING"
-                res["max_score"] = 3 # Score is out of 3 for IPOs
-                
-                # Use All-Time Highs/Lows since listing
+                res["max_score"] = 3
                 ath = self.df['High'].max()
                 atl = self.df['Low'].min()
-                
                 c1 = curr > ema_50
-                c2 = curr >= (0.75 * ath) # Near ATH
-                c3 = curr >= (1.25 * atl) # Momentum from low
-                
+                c2 = curr >= (0.75 * ath)
+                c3 = curr >= (1.25 * atl)
                 score = sum([c1, c2, c3])
                 res["score"] = score
                 if score == 3: res["status"] = "IPO POWER TREND"
                 elif score >= 1: res["status"] = "IPO UPTREND"
-                
                 if c1: res["details"].append("Price > EMA 50 (Short Term Trend)")
                 if c2: res["details"].append("Near All-Time Highs")
                 res["details"].append(f"Note: No EMA 200 yet ({self.data_len} days listed)")
                 return res
 
-            # --- STANDARD MODE (Data >= 200) ---
-            # Fix: Lookback is min(260, data_len) to handle stocks between 200-260 days
             lookback = min(self.data_len, 260)
-            
             ema_150 = self.df['EMA_150'].iloc[-1]
             ema_200 = self.df['EMA_200'].iloc[-1]
             year_high = self.df['High'].iloc[-lookback:].max()
@@ -332,7 +308,7 @@ class StockAnalyzer:
         except Exception as e: res["details"].append(f"Error: {str(e)}")
         return res
 
-    # --- ALL ORIGINAL BACKTEST FUNCTIONS (RESTORED) ---
+    # --- RESTORED BACKTEST FUNCTIONS ---
     def run_backtest_simulation(self, condition_series, hold_days):
         if condition_series is None: return 0.0 
         signals = self.df[condition_series].copy()
@@ -619,13 +595,11 @@ class StockAnalyzer:
             else: return {"detected": False, "msg": "Volatility not contracting."}
         except Exception as e: return {"detected": False, "msg": f"Error: {str(e)}"}
 
-    # --- UPDATED: Pattern Scan & Geometry with Channels ---
     def _detect_geometry_on_slice(self, df_slice):
         result = {"pattern": "None", "msg": "", "bounds": None}
         if len(df_slice) < 60: return result
         df = df_slice[-60:].copy()
         
-        # Identify Pivot Points (Highs and Lows)
         df['is_peak'] = df['High'] == df['High'].rolling(window=5, center=True).max()
         df['is_trough'] = df['Low'] == df['Low'].rolling(window=5, center=True).min()
         peaks = df[df['is_peak']]
@@ -636,7 +610,6 @@ class StockAnalyzer:
         p2, p1 = peaks['High'].iloc[-1], peaks['High'].iloc[-2]
         t2, t1 = troughs['Low'].iloc[-1], troughs['Low'].iloc[-2]
         
-        # Calculate Slopes
         p2_idx = df.index.get_loc(peaks.index[-1])
         p1_idx = df.index.get_loc(peaks.index[-2])
         t2_idx = df.index.get_loc(troughs.index[-1])
@@ -645,28 +618,16 @@ class StockAnalyzer:
         m_res = (p2 - p1) / (p2_idx - p1_idx) if (p2_idx - p1_idx) != 0 else 0
         m_sup = (t2 - t1) / (t2_idx - t1_idx) if (t2_idx - t1_idx) != 0 else 0
         
-        # Calculate Intercepts for projection (y = mx + c => c = y - mx)
         c_res = p2 - (m_res * p2_idx)
         c_sup = t2 - (m_sup * t2_idx)
         
-        # --- PATTERN CLASSIFICATION ---
-        
-        # 1. TRIANGLES (Converging Lines)
-        # Slopes must have opposite signs or one flat, one slope
-        if m_res < -0.01 and m_sup > 0.01: 
-            result["pattern"] = "Symmetrical Triangle"
-        elif abs(m_res) < 0.01 and m_sup > 0.01: 
-            result["pattern"] = "Ascending Triangle"
-        elif m_res < -0.01 and abs(m_sup) < 0.01: 
-            result["pattern"] = "Descending Triangle"
-            
-        # 2. CHANNELS / DIAGONALS (Parallel Lines)
-        # Slopes are similar (difference < 0.05) and significant (> 0.01)
+        if m_res < -0.01 and m_sup > 0.01: result["pattern"] = "Symmetrical Triangle"
+        elif abs(m_res) < 0.01 and m_sup > 0.01: result["pattern"] = "Ascending Triangle"
+        elif m_res < -0.01 and abs(m_sup) < 0.01: result["pattern"] = "Descending Triangle"
         elif abs(m_res - m_sup) < 0.05 and abs(m_res) > 0.01:
             if m_res > 0: result["pattern"] = "Ascending Channel"
             else: result["pattern"] = "Descending Channel"
 
-        # Calculate Apex (for Triangles only)
         if "Triangle" in result["pattern"]:
             apex_x = 0
             if (m_res - m_sup) != 0: apex_x = (c_sup - c_res) / (m_res - m_sup)
@@ -676,26 +637,17 @@ class StockAnalyzer:
         return result
 
     def scan_historical_patterns(self):
-        # Scans the entire history to count patterns
         counts = {"Triangle": 0, "Rectangle": 0, "Channel": 0, "Total": 0}
-        
-        # We step 20 days to avoid counting the same pattern multiple times
         step = 20
         start_idx = 100
-        
         for i in range(start_idx, self.data_len - 20, step):
             slice_df = self.df.iloc[:i]
-            
-            # Check Geometry (Triangles/Channels)
             geo = self._detect_geometry_on_slice(slice_df)
             if geo["pattern"] != "None":
                 if "Channel" in geo["pattern"]: counts["Channel"] += 1
                 elif "Triangle" in geo["pattern"]: counts["Triangle"] += 1
                 counts["Total"] += 1
                 continue 
-            
-            # Note: We omit Rectangle scanning here for speed, relying on Geometry
-            
         return counts
 
     def detect_geometric_patterns(self):
@@ -704,7 +656,6 @@ class StockAnalyzer:
         res["action"] = "N/A"
         
         if res["pattern"] != "None":
-            # TRIANGLE LOGIC
             if "Triangle" in res["pattern"]:
                 dist = res.get("apex_dist", 100)
                 res["msg"] += f" Apex in ~{int(dist)} days."
@@ -717,17 +668,12 @@ class StockAnalyzer:
                 else:
                     res["prediction"] = "Pattern Developing"
                     res["action"] = "Monitor"
-                    
-            # CHANNEL LOGIC
             elif "Channel" in res["pattern"]:
-                # Project lines to current candle
                 bounds = res["bounds"]
                 current_idx = bounds["len"] - 1
                 res_price = (bounds["m_res"] * current_idx) + bounds["c_res"]
                 sup_price = (bounds["m_sup"] * current_idx) + bounds["c_sup"]
                 curr_price = self.df['Close'].iloc[-1]
-                
-                # Check position relative to channel
                 if abs(curr_price - res_price) / res_price < 0.02:
                     res["prediction"] = "At Channel Resistance"
                     res["action"] = "Take Profit / Short"
@@ -737,7 +683,6 @@ class StockAnalyzer:
                 else:
                     res["prediction"] = "Mid-Channel"
                     res["action"] = "Wait for Edge"
-                    
         return res
 
     def detect_rectangle_pattern(self):
@@ -781,7 +726,7 @@ class StockAnalyzer:
         except: pass
         return res
 
-    # --- RESTORED: Candle Pattern Detection ---
+    # --- RESTORED FUNCTIONS ---
     def detect_candle_patterns(self):
         res = {"pattern": "None", "sentiment": "Neutral"}
         try:
@@ -797,7 +742,23 @@ class StockAnalyzer:
         except Exception: pass
         return res
 
-    # --- RESTORED: VSA Anomalies Detection ---
+    def detect_volume_breakout(self):
+        res = {"detected": False, "msg": ""}
+        try:
+            if self.data_len < 2: return res
+            c0 = self.df.iloc[-1] 
+            c1 = self.df.iloc[-2] 
+            is_green = c0['Close'] > c0['Open']
+            is_up = c0['Close'] > c1['Close']
+            vol_ok = c0['Volume'] > c0['VOL_MA']
+            tx_value = c0['Close'] * c0['Volume']
+            min_liq = self.config["MIN_DAILY_VOL"]
+            liq_ok = tx_value > min_liq
+            if is_green and is_up and vol_ok and liq_ok:
+                res = {"detected": True, "msg": "High Volume Accumulation Day"}
+        except Exception: pass
+        return res
+
     def detect_vsa_anomalies(self):
         res = {"detected": False, "msg": ""}
         try:
@@ -815,23 +776,18 @@ class StockAnalyzer:
         return res
 
     def analyze_smart_money_enhanced(self):
-        # IMPROVED: Now uses A/D Line, Stopping Volume, No Demand, and Green/Red Ratio
-        res = {"status": "NEUTRAL", "signals": [], "metrics": {}} # Added metrics
+        res = {"status": "NEUTRAL", "signals": [], "metrics": {}}
         try:
             c0 = self.df.iloc[-1]
             score = 0
             
-            # --- METRIC 1: BUYING PRESSURE (Green Vol vs Red Vol in last 20 days) ---
             recent = self.df.iloc[-20:]
             green_vol = recent[recent['Close'] > recent['Open']]['Volume'].sum()
             red_vol = recent[recent['Close'] < recent['Open']]['Volume'].sum()
             total_vol = green_vol + red_vol
             buy_pressure = (green_vol / total_vol) * 100 if total_vol > 0 else 50
             
-            # --- METRIC 2: BIG MONEY SPIKES ---
-            # Adjusted threshold to 1.25x (125%) to catch more signals
             avg_vol = recent['Volume'].mean()
-            # Handle case where avg_vol is 0 to avoid error
             if avg_vol > 0:
                 spikes = recent[recent['Volume'] > 1.25 * avg_vol]
                 green_spikes = len(spikes[spikes['Close'] > spikes['Open']])
@@ -839,21 +795,13 @@ class StockAnalyzer:
             else:
                 green_spikes, red_spikes = 0, 0
 
-            # Save metrics to result
-            res['metrics'] = {
-                'buy_pressure': buy_pressure,
-                'green_spikes': green_spikes,
-                'red_spikes': red_spikes
-            }
+            res['metrics'] = {'buy_pressure': buy_pressure, 'green_spikes': green_spikes, 'red_spikes': red_spikes}
 
-            # 1. VWAP (Value)
             if c0['Close'] > c0['VWAP']: score += 1; res['signals'].append("Price > VWAP (Inst. Support)")
             else: score -= 1; res['signals'].append("Price < VWAP (Weakness)")
 
-            # 2. NVI (Smart Money Accumulation)
             if c0['NVI'] > c0['NVI_EMA']: score += 1; res['signals'].append("NVI > EMA (Accumulation)")
             
-            # 3. A/D Line (Trend Divergence)
             if 'AD_Line' in self.df.columns and len(self.df) > 5:
                 ad_slope = self.calc_slope(self.df['AD_Line'], 5)
                 price_slope = self.calc_slope(self.df['Close'], 5)
@@ -862,24 +810,20 @@ class StockAnalyzer:
                 elif ad_slope > 0:
                      score += 1; res['signals'].append("A/D Line Rising (Buying Pressure)")
 
-            # 4. Institutional Dominance (FIXED LOGIC HERE)
             if buy_pressure > 60:
                  score += 1; res['signals'].append(f"Buying Pressure Dominant ({buy_pressure:.0f}%)")
-            elif buy_pressure < 40: # <--- LOGIKA BARU DITAMBAHKAN
+            elif buy_pressure < 40:
                  score -= 1; res['signals'].append(f"Selling Pressure Dominant ({100-buy_pressure:.0f}%)")
 
-            # 5. Advanced VSA
             spread = c0['High'] - c0['Low']
             avg_spread = self.df['ATR'].iloc[-1]
             is_down = c0['Close'] < c0['Open']
             is_up = c0['Close'] > c0['Open']
             
-            # Stopping Volume (Bullish)
             lower_wick = min(c0['Open'], c0['Close']) - c0['Low']
             if is_down and c0['RVOL'] > 1.5 and lower_wick > (0.4 * spread):
                  score += 2; res['signals'].append("VSA: Stopping Volume (Potential Reversal)")
             
-            # No Demand (Bearish)
             if is_up and c0['RVOL'] < 0.7:
                  score -= 1; res['signals'].append("VSA: No Demand (Weak Rally)")
 
@@ -908,7 +852,6 @@ class StockAnalyzer:
         else: tick = 25
         return round(price / tick) * tick
 
-    # --- HYBRID TRADE PLAN (Old + New Priority) ---
     def calculate_trade_plan_hybrid(self, ctx, trend_status, best_strategy, rect):
         plan = {"type": "HYBRID", "entry": 0, "stop_loss": 0, "take_profit": 0, "status": "WAIT", "reason": "No Signal"}
         
@@ -917,29 +860,24 @@ class StockAnalyzer:
         trigger = False
         raw_sl = 0
         
-        # Priority 1: New Rectangle Breakout
-        # Fix: Only trigger if it is a FRESH breakout
         if rect['detected'] and "FRESH BREAKOUT" in rect['status']:
              plan["status"] = "EXECUTE (Box Breakout)"
              plan["reason"] = f"MOMENTUM: Box Breakout (Rp {rect['top']:,.0f})."
              raw_sl = rect['top'] - atr
              trigger = True
 
-        # Priority 2: New Rectangle Support
         elif rect['detected'] and abs(current_price - rect['bottom'])/rect['bottom'] < 0.02:
              plan["status"] = "EXECUTE (Support Bounce)"
              plan["reason"] = f"VALUE: Box Support (Rp {rect['bottom']:,.0f})."
              raw_sl = rect['bottom'] - (atr * 0.5)
              trigger = True
 
-        # Priority 3: Old Low Cheat
         elif ctx['low_cheat']['detected']:
              plan["status"] = "EARLY ENTRY (Low Cheat)"
              plan["reason"] = "VCP: Valid Low Cheat Setup."
              raw_sl = current_price - (atr * 1.5)
              trigger = True
              
-        # Priority 4: Old Standard Trend
         elif best_strategy['is_triggered_today'] and "UPTREND" in trend_status:
              plan["status"] = "EXECUTE (Trend Follow)"
              plan["reason"] = f"STRATEGY: {best_strategy['strategy']} Triggered in Uptrend."
@@ -961,6 +899,54 @@ class StockAnalyzer:
                  plan['reason'] = "Risk Invalid (Stop > Entry)"
         return plan
 
+    def calculate_probability(self, best_strategy, context, trend_template):
+        base_prob = best_strategy.get('win_rate', 50)
+        if base_prob < 0: base_prob = 50
+        prob = base_prob
+        if trend_template["status"] in ["PERFECT UPTREND (Stage 2)", "STRONG UPTREND"]: prob += 15
+        elif trend_template["status"] == "DOWNTREND / BASE": prob -= 20
+        if "BUYING" in context['smart_money']: prob += 10
+        elif "SELLING" in context['smart_money']: prob -= 10
+        if context['vol_breakout']['detected']: prob += 5
+        if context['vsa']['detected'] and "Stopping" in context['vsa']['msg']: prob += 5
+        if context['low_cheat']['detected']: prob += 10
+        if context['vcp']['detected'] or context['geo']['pattern'] != "None": prob += 5
+        if "Success" in context['pattern_stats'].get('verdict', ''): prob += 5
+        if "Bullish" in context['candle']['sentiment']: prob += 5
+        prob = max(1, min(99, prob))
+        verdict = "LOW PROBABILITY"
+        if prob >= 75: verdict = "HIGH PROBABILITY"
+        elif prob >= 60: verdict = "MODERATE PROBABILITY"
+        return {"value": prob, "verdict": verdict}
+
+    def validate_signal(self, action, context, trend_template):
+        score = 0
+        reasons = []
+        if trend_template["status"] in ["PERFECT UPTREND (Stage 2)", "STRONG UPTREND"]:
+            score += 2; reasons.append("Stage 2 Uptrend (Minervini)")
+        rvol = self.df['RVOL'].iloc[-1] if 'RVOL' in self.df.columns else 1.0
+        if rvol > 1.2: score += 1; reasons.append("High Volume")
+        if context['vol_breakout']['detected']:
+             score += 2; reasons.append("Abnormal Accumulation Day")
+        if context['low_cheat']['detected']:
+             score += 2; reasons.append("Low Cheat Entry")
+        if "BUYING" in context['smart_money']: score += 1; reasons.append("Smart Money Accumulation")
+        if context['vsa']['detected']:
+             reasons.append(f"VSA: {context['vsa']['msg']}")
+             if "Absorption" in context['vsa']['msg']: score += 1
+        if self.market_df is not None and len(self.market_df) > 5:
+            s_ret = (self.df['Close'].iloc[-1] - self.df['Close'].iloc[-5]) / self.df['Close'].iloc[-5]
+            m_ret = (self.market_df['Close'].iloc[-1] - self.market_df['Close'].iloc[-5]) / self.market_df['Close'].iloc[-5]
+            if s_ret > m_ret: score += 1; reasons.append("Leader vs IHSG")
+        if context['squeeze']['detected']: score += 2; reasons.append("TTM Squeeze Firing")
+        pat_stats = context.get('pattern_stats', {})
+        if "Success" in pat_stats.get('verdict', '') and context['geo']['pattern'] != "None":
+            score += 1; reasons.append(f"Historical {context['geo']['pattern']} Success")
+        verdict = "WEAK"
+        if score >= 5: verdict = "ELITE SWING SETUP"
+        elif score >= 3: verdict = "MODERATE"
+        return score, verdict, reasons
+
     def get_market_context(self):
         last_price = self.df['Close'].iloc[-1]
         lookback = min(20, self.data_len)
@@ -976,7 +962,6 @@ class StockAnalyzer:
         
         atr = self.df['ATR'].iloc[-1] if 'ATR' in self.df.columns else 0
 
-        # --- UPDATE: Change % and MA Values ---
         change_pct = 0
         if len(self.df) >= 2:
             c0 = self.df['Close'].iloc[-1]
@@ -990,16 +975,15 @@ class StockAnalyzer:
             "EMA_200": self.df['EMA_200'].iloc[-1] if 'EMA_200' in self.df.columns else 0,
         }
         
-        # New Smart Money Analysis
         sm = self.analyze_smart_money_enhanced()
         pat_counts = self.scan_historical_patterns()
         
         return {
-            "price": last_price, "change_pct": change_pct, # Added change_pct
-            "ma_values": ma_values, "pattern_counts": pat_counts, # Added pattern counts
+            "price": last_price, "change_pct": change_pct, 
+            "ma_values": ma_values, "pattern_counts": pat_counts, 
             "support": support, "resistance": resistance,
             "dist_support": dist_supp, "fib_levels": fibs, 
-            "atr": atr, "smart_money": sm, # New Enhanced
+            "atr": atr, "smart_money": sm, 
             "vcp": self.detect_vcp_pattern(), 
             "geo": self.detect_geometric_patterns(),
             "candle": self.detect_candle_patterns(), 
@@ -1022,7 +1006,6 @@ class StockAnalyzer:
         self.prepare_indicators()
         self.analyze_news_sentiment()
         
-        # New Feature Calls
         rect = self.detect_rectangle_pattern()
         liq = self.check_liquidity_quality()
         best_strategy = self.optimize_stock(1, 60)
@@ -1030,18 +1013,16 @@ class StockAnalyzer:
         trend_template = self.check_trend_template()
         ctx = self.get_market_context()
         
-        # Validation Logic (Original)
         action = "WAIT"
         if best_strategy['is_triggered_today'] and trend_template['score'] >= 4: action = "ACTION: BUY"
         val_score, val_verdict, val_reasons = self.validate_signal(action, ctx, trend_template)
         prob_data = self.calculate_probability(best_strategy, ctx, trend_template)
 
-        # Plan (Hybrid)
         plan = self.calculate_trade_plan_hybrid(ctx, trend_template['status'], best_strategy, rect)
 
         return {
             "ticker": self.ticker, "name": self.info.get('longName', self.ticker),
-            "price": ctx['price'], "change_pct": ctx['change_pct'], # Pass to report
+            "price": ctx['price'], "change_pct": ctx['change_pct'], 
             "sentiment": self.news_analysis, "context": ctx,
             "plan": plan, 
             "validation": {"score": val_score, "verdict": val_verdict, "reasons": val_reasons},
