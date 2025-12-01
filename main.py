@@ -9,8 +9,8 @@ def clear_screen():
 
 def print_header():
     print("="*65)
-    print("      IHSG ULTIMATE SCANNER (V3.3 - Probability Filter)      ")
-    print("      Trend + VSA + Patterns + Smart Money + Prediction")
+    print("      IHSG ULTIMATE SCANNER (V3.4 - Sniper Edition)      ")
+    print("      Precision Entry + Multi-Timeframe + Smart Money")
     print("="*65)
 
 def print_report(data, balance):
@@ -43,13 +43,17 @@ def print_report(data, balance):
     if fund.get('warning'): print(f"   ⚠️ {fund['warning']}")
     if fund.get('z_score'): print(f"   🛡️ Safety:   {fund['z_score']} (Altman Z)")
 
-    # 3. TREND HEALTH (Minervini)
+    # 3. TREND HEALTH (Minervini + Weekly)
     tt = data['trend_template']
     ma = data['context'].get('ma_values', {})
     symbol = "✅" if "UPTREND" in tt['status'] else "⚠️ "
     print(f"\n{symbol} TREND HEALTH")
-    # Fix: Use max_score to show correct denominator (e.g., 3/3 for IPO)
-    print(f"   Status: {tt['status']} (Score: {tt['score']}/{tt.get('max_score', 6)})")
+    print(f"   Daily Status:  {tt['status']} (Score: {tt['score']}/{tt.get('max_score', 6)})")
+    
+    wt = data['context'].get('weekly_trend', 'UNKNOWN')
+    wt_sym = "✅" if wt == "UPTREND" else "🔻"
+    print(f"   Weekly Status: {wt_sym} {wt}")
+    
     print(f"   [EMA50: {ma.get('EMA_50', 0):,.0f}] | [EMA200: {ma.get('EMA_200', 0):,.0f}]")
     for det in tt['details']: print(f"   - {det}")
 
@@ -115,6 +119,12 @@ def print_report(data, balance):
         print(f"   STOP LOSS:   Rp {plan['stop_loss']:,.0f}")
         print(f"   TARGET (3R): Rp {plan['take_profit']:,.0f}")
         
+        # New: Trailing Stop Logic
+        risk_unit = plan['entry'] - plan['stop_loss']
+        if risk_unit > 0:
+            t1 = plan['entry'] + risk_unit
+            print(f"   MANAGEMENT:  At Rp {t1:,.0f} (1R), move SL to Breakeven.")
+        
         risk = plan['entry'] - plan['stop_loss']
         reward = plan['take_profit'] - plan['entry']
         rrr = reward / risk if risk > 0 else 0
@@ -128,7 +138,7 @@ def print_report(data, balance):
         else:
             print("   [!] Stop Loss too tight or risk too high.")
 
-    # 7. CONCLUSION (New Probability-Aware Logic)
+    # 7. CONCLUSION (Probability-Aware)
     print(f"\n🏁 FINAL VERDICT")
     val = data['validation']
     prob = data['probability']
@@ -141,12 +151,10 @@ def print_report(data, balance):
     
     # --- SMART LOGIC UPDATE ---
     if "EXECUTE" in status or "EARLY ENTRY" in status:
-        # Only recommend BUY if Probability is decent (> 60%)
         if prob_val >= 60:
             print(f"\n   👉 RECOMMENDATION: WATCHLIST / BUY")
             print(f"      Setup confirmed and stats look good.")
         else:
-            # Downgrade to RISKY if setup is good but stats are bad
             print(f"\n   👉 RECOMMENDATION: RISKY / SPECULATIVE BUY")
             print(f"      Setup is valid, but statistical win rate is low ({prob_val}%).")
             print(f"      Reduce position size if you enter.")
@@ -200,3 +208,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
