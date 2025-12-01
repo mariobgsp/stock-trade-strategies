@@ -42,7 +42,7 @@ jobs:
     - name: Analyze Stock 4
       run: python main.py AVIA --period 2y --sl 3.0 --tp 9.0 --fib 60
     - name: Analyze Stock 5
-      run: python main.py HMSP --period 2y --sl 3.0 --tp 9.0 --fib 60
+      run: python main.py ADRO --period 2y --sl 3.0 --tp 9.0 --fib 60
 
 
 
