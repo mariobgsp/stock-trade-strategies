@@ -319,6 +319,7 @@ class StockAnalyzer:
             res["score"] = score
             if score == 6: res["status"] = "PERFECT UPTREND (Stage 2)"
             elif score >= 4: res["status"] = "STRONG UPTREND"
+            elif score == 3: res["status"] = "WEAK UPTREND / RECOVERY" # <--- Added missing Score 3
             elif score <= 2: res["status"] = "DOWNTREND / BASE"
             
             if c1 and c2: res["details"].append("MA Alignment (Price > 150 > 200)")
@@ -964,22 +965,36 @@ class StockAnalyzer:
     def calculate_probability(self, best_strategy, context, trend_template):
         base_prob = best_strategy.get('win_rate', 50)
         if base_prob < 0: base_prob = 50
-        prob = base_prob
-        if trend_template["status"] in ["PERFECT UPTREND (Stage 2)", "STRONG UPTREND"]: prob += 15
-        elif trend_template["status"] == "DOWNTREND / BASE": prob -= 20
-        if "BUYING" in context['smart_money']: prob += 10
-        elif "SELLING" in context['smart_money']: prob -= 10
-        if context['vol_breakout']['detected']: prob += 5
-        if context['vsa']['detected'] and "Stopping" in context['vsa']['msg']: prob += 5
-        if context['low_cheat']['detected']: prob += 10
-        if context['vcp']['detected'] or context['geo']['pattern'] != "None": prob += 5
-        if "Success" in context['pattern_stats'].get('verdict', ''): prob += 5
-        if "Bullish" in context['candle']['sentiment']: prob += 5
-        prob = max(1, min(99, prob))
+        
+        # Use sigmoid-like dampening to prevent overconfidence
+        # Base: 50% -> Max movement from signals capped at +/- 40%
+        signal_score = 0
+        
+        if trend_template["status"] in ["PERFECT UPTREND (Stage 2)", "STRONG UPTREND"]: signal_score += 15
+        elif trend_template["status"] == "DOWNTREND / BASE": signal_score -= 20
+        
+        if "BUYING" in context['smart_money']: signal_score += 10
+        elif "SELLING" in context['smart_money']: signal_score -= 10
+        
+        if context['vol_breakout']['detected']: signal_score += 5
+        if context['vsa']['detected'] and "Stopping" in context['vsa']['msg']: signal_score += 5
+        if context['low_cheat']['detected']: signal_score += 10
+        if context['vcp']['detected'] or context['geo']['pattern'] != "None": signal_score += 5
+        if "Success" in context['pattern_stats'].get('verdict', ''): signal_score += 5
+        if "Bullish" in context['candle']['sentiment']: signal_score += 5
+
+        # Blend historical win rate with current signal strength
+        # Weight: 40% History, 60% Current Signal
+        final_prob = (base_prob * 0.4) + (50 + signal_score) * 0.6
+        
+        # Hard caps
+        final_prob = max(10, min(90, final_prob))
+        
         verdict = "LOW PROBABILITY"
-        if prob >= 75: verdict = "HIGH PROBABILITY"
-        elif prob >= 60: verdict = "MODERATE PROBABILITY"
-        return {"value": prob, "verdict": verdict}
+        if final_prob >= 75: verdict = "HIGH PROBABILITY"
+        elif final_prob >= 60: verdict = "MODERATE PROBABILITY"
+        
+        return {"value": round(final_prob, 1), "verdict": verdict}
 
     def validate_signal(self, action, context, trend_template):
         score = 0
@@ -1093,3 +1108,5 @@ class StockAnalyzer:
             "rectangle": rect, "best_strategy": best_strategy,
             "is_ipo": self.data_len < 200, "days_listed": self.data_len
         }
+
+
