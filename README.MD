@@ -1,147 +1,129 @@
-# 🇮🇩 IHSG Stock Validator 
+# 🇮🇩 IHSG Ultimate Stock Scanner (V3.5 - Sniper Pro)
 
-**Don't just guess. Validate with Math & Smart Money Flow.**
+**"Precision Over Frequency. One Shot, One Kill."**
 
-A professional-grade Command Line Interface (CLI) trading tool specifically engineered for the Indonesian Stock Exchange (IDX).  
-This tool combines Quantitative Backtesting, Smart Money (Bandarmology) Forensics, and Algorithmic Pattern Recognition to generate institutional-quality trade plans.
+A professional-grade CLI trading tool for the Indonesian Stock Exchange
+(IDX), optimized for high‑probability *Sniper* setups and disciplined
+Swing Trading risk management.
 
----
+------------------------------------------------------------------------
 
-## 🌟 What's New in V3.1
-- **Advanced Bandarmology VSA**: Detects *Stopping Volume* (Absorption) and *No Demand* signals using Volume Spread Analysis.
-- **Buying Pressure Meter**: Visualizes the dominance of Buyers vs Sellers over the last 20 days.
-- **Big Money Spikes**: Tracks days where volume exceeded 1.25× average (Accumulation vs Distribution count).
-- **A/D Line Divergence**: Detects hidden accumulation when price drops but Money Flow rises.
-- **Adaptive IPO Mode**: Adjusts trend filters for stocks listed < 260 days (e.g., "IPO Power Trend").
-- **Final Verdict Engine**: Produces a clear recommendation: `WATCHLIST`, `WAIT`, or `AVOID`.
+## 🌟 New in V3.5 (Sniper Pro Update)
 
----
+-   🦎 **Dynamic Chameleon MA** --- Automatically finds which MA
+    (10--200) the stock respects the most.\
+-   🕯️ **Inside Bar Detection** --- Detects volatility coils ideal for
+    sniper entries.\
+-   📊 **RS Score (0--99)** --- Ranks each stock versus IHSG to ensure
+    you trade leaders.\
+-   ⚖️ **Swing--Sniper Calibration** --- 3.0 ATR stops, 6.0 ATR
+    targets.\
+-   🧠 **Multi‑Timeframe Logic** --- Weekly trend + daily confirmation.
+
+------------------------------------------------------------------------
 
 ## 🚀 Key Features
 
-### 1. 🏦 Smart Money Forensics (The "Bandar" Detector)
-Composite index of 5 institutional footprints:
-- VSA Anomalies: Churning, Stopping Volume, No Demand.
-- Net Volume Pressure: Ratio of Up-Volume vs Down-Volume.
-- VWAP Anchoring: Detects institutional defence of price.
-- NVI (Negative Volume Index): Tracks "Smart Money" on low-volume days.
-- Accumulation/Distribution (A/D) Line: Spots flow divergences.
+### 1. 🏦 Smart Money Forensics (Bandar Detector)
 
-### 2. 🛡️ Professional Risk Management (3R)
-Generates a full trade plan:
-- Position sizing calculated from your IDR balance and risk %.
-- Dynamic Stop Loss using ATR to avoid market noise.
-- Reward-to-Risk targeting minimum 1:3.
+-   VSA anomalies (Churning, Stopping Volume, No Demand)\
+-   Stealth accumulation\
+-   Net volume pressure\
+-   NVI + VWAP institutional behavior
 
-### 3. 🧠 Hybrid Strategy Engine
-Prioritized setups:
-1. Rectangle/Box Breakout (momentum)
-2. Box Support Bounce (value play)
-3. Low Cheat (VCP) (early entry in trend)
-4. Minervini Trend Follow (Stage 2 trend)
+### 2. 🛡️ Professional Risk Management (3R System)
 
-### 4. 🔎 Algorithmic Backtesting (Self-Optimizing)
-Learns from ticker history:
-- Breakout reliability
-- Smart Money signal accuracy on that ticker
-- Which moving averages the stock respects (20/50/200)
+-   Automatic lot sizing based on balance & risk %\
+-   ATR‑based dynamic stop loss\
+-   Trailing stop & breakeven signals
+
+### 3. 🧠 Hybrid Strategy Engine (Priority Order)
+
+1.  🚀 Sniper RSI + Stoch\
+2.  📦 Fresh Box Breakout\
+3.  💰 Support Bounce\
+4.  ⚡ Low Cheat (VCP)\
+5.  📈 Minervini Trend Following
+
+### 4. 🔎 Algorithmic Backtesting
+
+-   Breakout reliability scoring\
+-   VSA accuracy measurement\
+-   Dynamic MA Fit ("magic line")
 
 ### 5. 📉 Pattern Recognition
-- VCP (Volatility Contraction Pattern)
-- TTM Squeeze (Bollinger inside Keltner)
-- Geometric shapes: Triangles (ascending, descending, symmetrical)
 
----
+-   VCP\
+-   Rectangles & Inside Bars\
+-   Triangles & Channels
+
+------------------------------------------------------------------------
 
 ## 🛠️ Installation
 
-```bash
-# Clone or download the repository
-git clone <repo-url>
-cd ihsg-ultimate-scanner
+    pip install yfinance pandas numpy pandas_ta textblob beautifulsoup4 requests
 
-# Install Python dependencies
-pip install yfinance pandas numpy pandas_ta textblob beautifulsoup4 requests
-```
-
----
+------------------------------------------------------------------------
 
 ## 🖥️ Usage
 
 ### Quick Start
-Analyze a stock using default settings (IDR 100,000,000 balance, 1% risk):
 
-```bash
-python main.py BBCA
-```
+    python main.py BBCA
 
 ### Power User Mode
-Customize account size and risk:
 
-```bash
-# Example: 500 Juta Balance, Risking 2% per trade
-python main.py BMRI --balance 500000000 --risk 2.0
-```
+    python main.py BMRI --balance 500000000 --risk 2.0
 
 ### Full Argument List
 
-| Flag        | Description                                   | Default           |
-|-------------|-----------------------------------------------|-------------------|
-| ticker      | Stock Code (e.g., BBRI, GOTO)                 | **Required**      |
-| --balance   | Your Account Balance (IDR)                    | 100,000,000       |
-| --risk      | Risk per trade (%)                            | 1.0               |
-| --period    | Data lookback period                          | 2y                |
-| --sl        | Stop Loss ATR Multiplier                      | 2.5               |
-| --tp        | Take Profit ATR Multiplier                    | 5.0               |
-| --min_vol   | Minimum daily transaction (IDR)               | 1,000,000,000     |
+  Flag        Description                     Default
+  ----------- ------------------------------- -------------
+  ticker      Stock Code (e.g., BBRI, GOTO)   Required
+  --balance   Account Balance (IDR)           100,000,000
+  --risk      Risk per trade (%)              1.0%
+  --period    Data lookback                   2y
+  --sl        Stop Loss ATR Multiplier        3.0
+  --tp        Take Profit ATR Multiplier      6.0
+  --min_vol   Min daily transaction (IDR)     1 Billion
 
----
+------------------------------------------------------------------------
 
 ## 📊 Sample Output Preview
 
-```
-STOCK: Bank Central Asia Tbk (BBCA)
-PRICE: Rp 10,200 (🟢 +1.50%)
+    STOCK: Bank Central Asia Tbk (BBCA)
+    PRICE: Rp 10,200 (+1.50%)
 
-✅ LIQUIDITY CHECK
-   Healthy Liquidity (525.50B IDR)
+    LIQUIDITY: Healthy (525.50B)
 
-✅ TREND HEALTH
-   Status: PERFECT UPTREND (Stage 2) (Score: 6/6)
-   [EMA50: 9,850] | [EMA200: 9,100]
+    TREND HEALTH:
+      Daily:  PERFECT UPTREND (6/6)
+      Weekly: UPTREND
+      RS:     85/99
 
-🔹 SMART MONEY (Bandarmology Proxy)
-   Status: BULLISH (Accumulation)
-   Pressure:  [████████████░░░░░░░░] 60.5% Buy Vol
-   Big Moves: 3 Accumulation Days vs 1 Distribution Days
-   - VSA: Stopping Volume (Potential Reversal)
-   - Price > VWAP (Inst. Support)
+    SMART MONEY:
+      Bullish Accumulation
+      Buy Pressure: 60.5%
+      VSA: Stopping Volume
 
-🚀 TRADE PLAN (3R)
-   ACTION:      BUY (EXECUTE (Box Breakout))
-   ENTRY:       Rp 10,200
-   STOP LOSS:   Rp 9,900
-   TARGET (3R): Rp 11,100
+    TRADE PLAN:
+      ACTION: BUY
+      ENTRY:  Rp 10,200
+      SL:     Rp 9,900
+      TP:     Rp 12,000
+      MGMT:   Move SL to BE at Rp 10,500 (1R)
 
-   --- POSITION SIZING (Bal: 100 Jt) ---
-   🛒 BUY:      33 LOTS
-   🔥 Risk:     Rp 1,000,000 (1.0%)
+    FINAL VERDICT:
+      Strength: ELITE SWING SETUP (Score 5)
+      Probability: ~82.5%
+      Recommendation: WATCHLIST / BUY
 
-🏁 FINAL VERDICT
-   Signal Strength: ELITE SWING SETUP (Score: 5)
-   👉 RECOMMENDATION: WATCHLIST / BUY
-```
-
----
+------------------------------------------------------------------------
 
 ## ⚠️ Disclaimer
-For **educational purposes only**. This tool uses mathematical probabilities and algorithmic proxies for "Bandarmology" (volume/price heuristics) and **does not** represent actual brokerage data. Always do your own research and consult licensed financial professionals before trading.
 
----
-
-## ❤️ Built With
-- Python
-- yfinance, pandas, numpy, pandas_ta, textblob
-- Requests & BeautifulSoup for auxiliary data
-
----
+This tool is for **educational purposes only**.\
+It uses mathematical and algorithmic proxies and does not represent real
+brokerage data.\
+Always perform your own research.\
+Built with Python & ❤️ for IHSG.

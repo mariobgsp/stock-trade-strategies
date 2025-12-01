@@ -18,14 +18,13 @@ DEFAULT_CONFIG = {
     "RSI_PERIOD": 14,
     "RSI_LOWER": 30,
     "ATR_PERIOD": 14,
-    "SL_MULTIPLIER": 2.5,
-    "TP_MULTIPLIER": 5.0, # Adjusted for Risk Reward
+    "SL_MULTIPLIER": 3.0, 
+    "TP_MULTIPLIER": 6.0,
     "CMF_PERIOD": 20,
     "MFI_PERIOD": 14,
     "VOL_MA_PERIOD": 20,
     "MIN_MARKET_CAP": 500_000_000_000, 
     "MIN_DAILY_VOL": 1_000_000_000,
-    # --- NEW CONFIGS ---
     "MIN_ADTV_IDR": 5_000_000_000,
     "ACCOUNT_BALANCE": 100_000_000,
     "RISK_PER_TRADE_PCT": 1.0
@@ -269,6 +268,18 @@ class StockAnalyzer:
                 regime = "BEARISH"
         return regime
 
+    def check_weekly_trend(self):
+        try:
+            logic = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
+            weekly_df = self.df.resample('W').apply(logic).dropna()
+            if len(weekly_df) < 30: return "UNKNOWN"
+            weekly_df['EMA_30'] = weekly_df['Close'].ewm(span=30, adjust=False).mean()
+            curr = weekly_df['Close'].iloc[-1]
+            ema = weekly_df['EMA_30'].iloc[-1]
+            if curr > ema: return "UPTREND"
+            return "DOWNTREND"
+        except: return "UNKNOWN"
+
     def check_trend_template(self):
         res = {"status": "FAIL", "score": 0, "max_score": 6, "details": []}
         try:
@@ -319,7 +330,7 @@ class StockAnalyzer:
             res["score"] = score
             if score == 6: res["status"] = "PERFECT UPTREND (Stage 2)"
             elif score >= 4: res["status"] = "STRONG UPTREND"
-            elif score == 3: res["status"] = "WEAK UPTREND / RECOVERY" # <--- Added missing Score 3
+            elif score == 3: res["status"] = "WEAK UPTREND / RECOVERY"
             elif score <= 2: res["status"] = "DOWNTREND / BASE"
             
             if c1 and c2: res["details"].append("MA Alignment (Price > 150 > 200)")
@@ -380,15 +391,26 @@ class StockAnalyzer:
         except Exception: pass
         return res
 
+    # --- UPDATED: STRICT BACKTEST (SNIPER RULE > 1.5x) ---
     def backtest_volume_breakout_behavior(self):
         res = {"accuracy": "N/A", "avg_return_5d": 0, "count": 0, "behavior": "Unknown", "best_horizon": 0}
         try:
             if self.data_len < 100: return res
             min_liq = self.config["MIN_DAILY_VOL"]
             tx_value = self.df['Close'] * self.df['Volume']
-            signals = ((self.df['Close'] > self.df['Open']) & (self.df['Close'] > self.df['Close'].shift(1)) & (self.df['Volume'] > self.df['VOL_MA']) & (tx_value > min_liq))
+            
+            # --- SNIPER UPGRADE: Use 1.5x Volume Rule for Backtest too ---
+            signals = (
+                (self.df['Close'] > self.df['Open']) & 
+                (self.df['Close'] > self.df['Close'].shift(1)) & 
+                (self.df['Volume'] > 1.5 * self.df['VOL_MA']) & # Strict Rule
+                (tx_value > min_liq)
+            )
+            
             breakout_indices = self.df.index[signals]
-            if len(breakout_indices) < 5: return res
+            if len(breakout_indices) < 3: # Relaxed min count slightly as strict rule yields fewer trades
+                 return res
+                 
             best_win_rate = -1
             best_stats = None
             numeric_indices = [self.df.index.get_loc(i) for i in breakout_indices]
@@ -562,6 +584,29 @@ class StockAnalyzer:
                 if wr > best_res['win_rate']:
                     best_res = {"strategy": "MA Trend", "details": "Trend Following (50 > 200)", "win_rate": wr, "hold_days": days, "is_triggered_today": True}
         return best_res
+
+    # --- NEW: DYNAMIC BEST FIT MA ---
+    def find_best_dynamic_ma(self):
+        best_ma = {"period": 0, "bounces": 0, "price": 0}
+        try:
+            close = self.df['Close']
+            low = self.df['Low']
+            
+            for p in range(20, 201, 5):
+                ema = close.ewm(span=p, adjust=False).mean()
+                touches = (low <= ema * 1.01) & (low >= ema * 0.99) & (close > ema)
+                bounces = touches.sum()
+                
+                if bounces > best_ma["bounces"]:
+                    best_ma["period"] = p
+                    best_ma["bounces"] = bounces
+                    best_ma["price"] = ema.iloc[-1]
+            
+            if best_ma["bounces"] < 3: 
+                best_ma = {"period": 50, "bounces": 0, "price": self.df['EMA_50'].iloc[-1]} 
+                
+        except: pass
+        return best_ma
 
     # --- UPDATED: Fundamentals with Altman Z-Score ---
     def check_fundamentals(self):
@@ -740,46 +785,63 @@ class StockAnalyzer:
                     res["action"] = "Wait for Edge"
         return res
 
-    def detect_rectangle_pattern(self):
-        res = {"detected": False, "top": 0, "bottom": 0, "msg": "No Pattern"}
-        try:
-            lookback = 45
-            if self.data_len < lookback: return res
+    # --- UPDATED: Multi-Window Rectangle Detection ---
+    def _scan_box(self, window_size):
+        res = {"detected": False, "top": 0, "bottom": 0, "msg": "No Pattern", "status": "None"}
+        if self.data_len < window_size: return res
+        
+        window = self.df.iloc[-window_size:].copy()
+        
+        # Quantile-based Box (Filters out noise wicks)
+        box_top = window['Close'].quantile(0.95)
+        box_bot = window['Close'].quantile(0.05)
+        
+        # Tightness Check (Box shouldn't be too wide)
+        height_pct = (box_top - box_bot) / box_bot
+        if height_pct > 0.25: return res
+        
+        curr = self.df['Close'].iloc[-1]
+        
+        # Status Logic
+        if curr > (box_top * 1.05): return res # Too far gone
+        if curr < (box_bot * 0.95): return res # Breakdown
+        
+        status = "INSIDE BOX"
+        if curr > box_top:
+            if curr <= (box_top * 1.03): status = "FRESH BREAKOUT"
+            else: status = "EXTENDED (Caution)"
+        elif (curr - box_bot) / (box_top - box_bot) < 0.2:
+            status = "SUPPORT BOUNCE"
             
-            window = self.df.iloc[-lookback:].copy()
-            max_p = window['High'].max()
-            min_p = window['Low'].min()
-            
-            height_pct = (max_p - min_p) / min_p
-            if height_pct > 0.25: return res
-
-            upper_bound = window['Close'].quantile(0.95)
-            lower_bound = window['Close'].quantile(0.05)
-            box_top = upper_bound
-            box_bot = lower_bound
-            
-            curr = self.df['Close'].iloc[-1]
-            
-            if curr > (box_top * 1.05): return res 
-            if curr < (box_bot * 0.95): return res
-                
-            status = ""
-            if curr > box_top:
-                if curr <= (box_top * 1.03): status = "FRESH BREAKOUT"
-                else: status = "EXTENDED (Caution)"
-            elif (curr - box_bot) / (box_top - box_bot) < 0.2:
-                status = "SUPPORT BOUNCE"
-            else:
-                status = "INSIDE BOX"
-                
-            res = {
-                "detected": True, "top": box_top, "bottom": box_bot, 
-                "height_pct": ((box_top - box_bot)/box_bot) * 100, 
-                "status": status, 
-                "msg": f"Consolidation ({box_bot:,.0f}-{box_top:,.0f})"
-            }
-        except: pass
+        res = {
+            "detected": True, 
+            "top": box_top, "bottom": box_bot, 
+            "height_pct": height_pct * 100, 
+            "status": status, 
+            "msg": f"Consolidation ({box_bot:,.0f}-{box_top:,.0f})"
+        }
         return res
+
+    def detect_rectangle_pattern(self):
+        # 1. Try Short Term (15 days) - "Micro Base" / "Flag"
+        # Priority: High
+        res_short = self._scan_box(15)
+        if res_short['detected'] and res_short['status'] != "INSIDE BOX":
+             # If actionable (Breakout/Bounce), return immediately
+             return res_short
+
+        # 2. Try Medium Term (50 days) - "Base"
+        res_med = self._scan_box(50)
+        
+        # If Short detected "Inside Box" but Medium detected "Breakout", prefer Medium
+        if res_short['detected'] and res_med['detected']:
+             if res_med['status'] == "FRESH BREAKOUT": return res_med
+             return res_short # Default to shorter pattern
+        
+        if res_short['detected']: return res_short
+        if res_med['detected']: return res_med
+        
+        return {"detected": False, "top": 0, "bottom": 0, "msg": "No Pattern", "status": "None"}
 
     def detect_candle_patterns(self):
         res = {"pattern": "None", "sentiment": "Neutral"}
@@ -829,6 +891,47 @@ class StockAnalyzer:
         except Exception: pass
         return res
 
+    # --- NEW: Detect Inside Bar ---
+    def detect_inside_bar(self):
+        res = {"detected": False, "high": 0, "low": 0, "msg": ""}
+        try:
+            if self.data_len < 2: return res
+            
+            curr = self.df.iloc[-1]
+            prev = self.df.iloc[-2]
+            
+            # Inside Bar Logic: High < Prev High AND Low > Prev Low
+            is_inside = (curr['High'] < prev['High']) and (curr['Low'] > prev['Low'])
+            
+            if is_inside:
+                # Check volume for "Coil" effect (low volume is better)
+                is_low_vol = curr['Volume'] < prev['Volume']
+                msg = "Inside Bar (Coil)" if is_low_vol else "Inside Bar (Volatility Contraction)"
+                
+                res = {
+                    "detected": True,
+                    "high": prev['High'], # Breakout trigger
+                    "low": prev['Low'],   # Breakdown trigger
+                    "msg": msg
+                }
+        except: pass
+        return res
+    
+    # --- NEW: Detect Stealth Accumulation ---
+    def detect_stealth_accumulation(self):
+        # Check for high volume with low price movement near recent highs
+        try:
+            if self.data_len < 2: return False
+            c0 = self.df.iloc[-1]
+            spread = c0['High'] - c0['Low']
+            avg_spread = self.df['ATR'].iloc[-1]
+            
+            # High Volume (>1.5x) + Small Spread (<0.8x ATR) + Close in upper half
+            if c0['RVOL'] > 1.5 and spread < (0.8 * avg_spread) and c0['Close'] > ((c0['High'] + c0['Low']) / 2):
+                return True
+        except: pass
+        return False
+
     def analyze_smart_money_enhanced(self):
         res = {"status": "NEUTRAL", "signals": [], "metrics": {}}
         try:
@@ -867,6 +970,10 @@ class StockAnalyzer:
             if 'PVT' in self.df.columns and len(self.df) > 5:
                 pvt_slope = self.calc_slope(self.df['PVT'], 5)
                 if pvt_slope > 0: score += 1; res['signals'].append("PVT Rising (Positive Volume Trend)")
+            
+            # New: Stealth Accumulation Check
+            if self.detect_stealth_accumulation():
+                score += 2; res['signals'].append("Stealth Accumulation (High Vol, Low Spread)")
 
             if buy_pressure > 60:
                  score += 1; res['signals'].append(f"Buying Pressure Dominant ({buy_pressure:.0f}%)")
@@ -915,51 +1022,162 @@ class StockAnalyzer:
         else: tick = 25
         return round(price / tick) * tick
 
+    # --- UPDATED: Sniper Edition Trade Plan with Swing Adjustments & RSI/Stoch ---
     def calculate_trade_plan_hybrid(self, ctx, trend_status, best_strategy, rect):
-        plan = {"type": "HYBRID", "entry": 0, "stop_loss": 0, "take_profit": 0, "status": "WAIT", "reason": "No Signal"}
+        # Default Plan
+        plan = {
+            "type": "HYBRID", 
+            "entry": 0, 
+            "stop_loss": 0, 
+            "take_profit": 0, 
+            "status": "WAIT", 
+            "reason": "No Signal"
+        }
         
         atr = ctx['atr']
         current_price = ctx['price']
-        trigger = False
-        raw_sl = 0
         
+        # Container for valid setups
+        valid_setups = []
+        
+        # 0. NEW PRIORITY: SNIPER RSI+STOCH
+        try:
+            curr_rsi = self.df['RSI'].iloc[-1]
+            prev_rsi = self.df['RSI'].iloc[-2]
+            curr_k = self.df['STOCHk'].iloc[-1]
+            prev_k = self.df['STOCHk'].iloc[-2]
+            curr_d = self.df['STOCHd'].iloc[-1]
+            
+            # Logic: RSI healthy (>50 or rising from >40) AND Stoch crossing up from oversold
+            rsi_ok = (curr_rsi > 50) or (curr_rsi > 40 and curr_rsi > prev_rsi)
+            stoch_buy = (prev_k < 20) and (curr_k > prev_k) and (curr_k > curr_d)
+            
+            if rsi_ok and stoch_buy:
+                valid_setups.append({
+                    "reason": "SNIPER: RSI Trend + Stoch Reversal",
+                    "entry": current_price,
+                    "sl": current_price - (atr * 2.0),
+                    "type": "SNIPER_MOMENTUM"
+                })
+        except: pass
+
+        # 0.5. NEW: Inside Bar Breakout
+        ib = ctx.get('inside_bar', {})
+        if ib.get('detected'):
+             valid_setups.append({
+                "reason": f"PATTERN: Inside Bar Coil (Breakout > {ib['high']})",
+                "entry": ib['high'],
+                "sl": ib['low'],
+                "type": "INSIDE_BAR"
+            })
+
+        # 1. Check Rectangle Breakout (Volume Thrust + Freshness)
         if rect['detected'] and "FRESH BREAKOUT" in rect['status']:
-             plan["status"] = "EXECUTE (Box Breakout)"
-             plan["reason"] = f"MOMENTUM: Box Breakout (Rp {rect['top']:,.0f})."
-             raw_sl = rect['top'] - atr
-             trigger = True
+             # Check Volume Thrust (Current Vol > 1.5x Avg) - Simplification: Use RVOL
+             rvol = self.df['RVOL'].iloc[-1]
+             if rvol > 1.5:
+                 valid_setups.append({
+                    "reason": f"SNIPER: High Vol Breakout (Rp {rect['top']:,.0f})",
+                    "entry": rect['top'], 
+                    "sl": rect['top'] - (atr * 2.0), # Swing: Wider SL (2.0 ATR)
+                    "type": "BREAKOUT"
+                })
 
-        elif rect['detected'] and abs(current_price - rect['bottom'])/rect['bottom'] < 0.02:
-             plan["status"] = "EXECUTE (Support Bounce)"
-             plan["reason"] = f"VALUE: Box Support (Rp {rect['bottom']:,.0f})."
-             raw_sl = rect['bottom'] - (atr * 0.5)
-             trigger = True
+        # 2. Check Rectangle Support Bounce
+        if rect['detected'] and abs(current_price - rect['bottom'])/rect['bottom'] < 0.02:
+            valid_setups.append({
+                "reason": f"VALUE: Box Support Bounce (Rp {rect['bottom']:,.0f})",
+                "entry": rect['bottom'], 
+                "sl": rect['bottom'] - (atr * 1.5), # Swing: Moderate SL (1.5 ATR)
+                "type": "SUPPORT"
+            })
 
-        elif ctx['low_cheat']['detected']:
-             plan["status"] = "EARLY ENTRY (Low Cheat)"
-             plan["reason"] = "VCP: Valid Low Cheat Setup."
-             raw_sl = current_price - (atr * 1.5)
-             trigger = True
+        # 3. Check Low Cheat (VCP)
+        if ctx['low_cheat']['detected']:
+            valid_setups.append({
+                "reason": "VCP: Valid Low Cheat Setup",
+                "entry": current_price,
+                "sl": current_price - (atr * 2.0), # Swing: Wider SL
+                "type": "EARLY_ENTRY"
+            })
              
-        elif best_strategy['is_triggered_today'] and "UPTREND" in trend_status:
-             plan["status"] = "EXECUTE (Trend Follow)"
-             plan["reason"] = f"STRATEGY: {best_strategy['strategy']} Triggered in Uptrend."
-             raw_sl = current_price - (atr * 2.5)
-             trigger = True
+        # 4. Check Standard Trend Strategy (Golden Confluence)
+        if best_strategy['is_triggered_today'] and "STRONG" in trend_status and "BULLISH" in ctx['smart_money']['status']:
+            valid_setups.append({
+                "reason": f"CONFLUENCE: {best_strategy['strategy']} + Smart Money + Strong Trend",
+                "entry": current_price,
+                "sl": current_price - (atr * 3.0), # Swing: Wide SL for Trend Following
+                "type": "TREND"
+            })
+        
+        # 5. Dynamic MA Support
+        best_ma = ctx.get('best_ma', {})
+        if best_ma.get('bounces', 0) >= 3:
+             ma_price = best_ma['price']
+             if abs(current_price - ma_price) / ma_price < 0.015:
+                 valid_setups.append({
+                    "reason": f"SNIPER: Bounce off Dynamic EMA {best_ma['period']}",
+                    "entry": ma_price,
+                    "sl": ma_price - (atr * 1.5),
+                    "type": "DYNAMIC_MA"
+                })
 
-        if trigger:
-             plan['entry'] = self.adjust_to_tick_size(current_price)
-             plan['stop_loss'] = self.adjust_to_tick_size(raw_sl)
-             risk = plan['entry'] - plan['stop_loss']
-             if risk > 0:
-                 tp_3r = plan['entry'] + (risk * 3.0)
-                 plan['take_profit'] = self.adjust_to_tick_size(tp_3r)
-                 lots, risk_amt = self.calculate_position_size(plan['entry'], plan['stop_loss'])
-                 plan['lots'] = lots
-                 plan['risk_amt'] = risk_amt
-             else:
-                 plan['status'] = "WAIT"
-                 plan['reason'] = "Risk Invalid (Stop > Entry)"
+        # 6. Check Channel Support
+        geo = ctx['geo']
+        if geo['pattern'] != "None" and "Channel" in geo['pattern'] and "Support" in geo.get('prediction', ''):
+             valid_setups.append({
+                "reason": f"GEOMETRY: {geo['pattern']} Support Bounce",
+                "entry": current_price,
+                "sl": current_price - (atr * 1.5),
+                "type": "CHANNEL"
+            })
+
+        # --- DECISION LOGIC ---
+        if not valid_setups:
+            # Handle the "Close to Resistance" warning
+            if rect['detected'] and rect['status'] == "INSIDE BOX":
+                 dist_to_top = (rect['top'] - current_price) / current_price
+                 if dist_to_top < 0.03:
+                     plan["reason"] = f"Price near resistance ({rect['top']:,.0f}). Wait for Breakout."
+                 else:
+                     plan["reason"] = "No valid entry inside box. Wait for support or breakout."
+            return plan
+
+        primary_setup = valid_setups[0]
+        combined_reasons = [s['reason'] for s in valid_setups]
+        final_reason = " + ".join(combined_reasons)
+        
+        # Calculate Entry
+        entry_price = self.adjust_to_tick_size(primary_setup['entry'])
+        
+        # Pullback Logic: If entry is breakout, suggest Limit slightly below
+        if primary_setup['type'] == "BREAKOUT":
+             entry_price = self.adjust_to_tick_size(primary_setup['entry'] * 0.995) # 0.5% discount
+             final_reason += " (Limit Order)"
+
+        if current_price > entry_price and primary_setup['type'] != "BREAKOUT" and primary_setup['type'] != "INSIDE_BAR":
+            entry_price = current_price
+
+        stop_loss = self.adjust_to_tick_size(primary_setup['sl'])
+        if stop_loss >= entry_price:
+            stop_loss = self.adjust_to_tick_size(entry_price - atr)
+
+        risk = entry_price - stop_loss
+        
+        if risk > 0:
+            plan['status'] = "EXECUTE"
+            plan['reason'] = final_reason
+            plan['entry'] = entry_price
+            plan['stop_loss'] = stop_loss
+            plan['take_profit'] = self.adjust_to_tick_size(entry_price + (risk * self.config["TP_MULTIPLIER"])) # Use Swing Target
+            
+            lots, risk_amt = self.calculate_position_size(plan['entry'], plan['stop_loss'])
+            plan['lots'] = lots
+            plan['risk_amt'] = risk_amt
+        else:
+             plan['status'] = "WAIT"
+             plan['reason'] = "Risk Invalid (Stop > Entry)"
+
         return plan
 
     def calculate_probability(self, best_strategy, context, trend_template):
@@ -1054,13 +1272,22 @@ class StockAnalyzer:
         
         sm = self.analyze_smart_money_enhanced()
         pat_counts = self.scan_historical_patterns()
+        weekly_trend = self.check_weekly_trend() # Sniper: Weekly Trend Check
         
+        # New: Dynamic MA
+        best_ma = self.find_best_dynamic_ma()
+
+        # New: Detect Inside Bar
+        inside_bar = self.detect_inside_bar()
+
         return {
             "price": last_price, "change_pct": change_pct, 
             "ma_values": ma_values, "pattern_counts": pat_counts, 
             "support": support, "resistance": resistance,
             "dist_support": dist_supp, "fib_levels": fibs, 
-            "atr": atr, "smart_money": sm, 
+            "atr": atr, "smart_money": sm, "weekly_trend": weekly_trend,
+            "best_ma": best_ma, # Added dynamic MA
+            "inside_bar": inside_bar, # Added inside bar
             "vcp": self.detect_vcp_pattern(), 
             "geo": self.detect_geometric_patterns(),
             "candle": self.detect_candle_patterns(), 
@@ -1108,5 +1335,3 @@ class StockAnalyzer:
             "rectangle": rect, "best_strategy": best_strategy,
             "is_ipo": self.data_len < 200, "days_listed": self.data_len
         }
-
-
