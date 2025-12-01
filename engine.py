@@ -925,59 +925,119 @@ class StockAnalyzer:
         return round(price / tick) * tick
 
     def calculate_trade_plan_hybrid(self, ctx, trend_status, best_strategy, rect):
-        plan = {"type": "HYBRID", "entry": 0, "stop_loss": 0, "take_profit": 0, "status": "WAIT", "reason": "No Signal"}
+        # Default Plan
+        plan = {
+            "type": "HYBRID", 
+            "entry": 0, 
+            "stop_loss": 0, 
+            "take_profit": 0, 
+            "status": "WAIT", 
+            "reason": "No Signal"
+        }
         
         atr = ctx['atr']
         current_price = ctx['price']
-        trigger = False
-        raw_sl = 0
         
+        # Container for valid setups
+        valid_setups = []
+        
+        # 1. Check Rectangle Breakout
         if rect['detected'] and "FRESH BREAKOUT" in rect['status']:
-             plan["status"] = "EXECUTE (Box Breakout)"
-             plan["reason"] = f"MOMENTUM: Box Breakout (Rp {rect['top']:,.0f})."
-             raw_sl = rect['top'] - atr
-             trigger = True
+            valid_setups.append({
+                "reason": f"MOMENTUM: Box Breakout (Rp {rect['top']:,.0f})",
+                "entry": rect['top'], # Breakout level
+                "sl": rect['top'] - atr,
+                "type": "BREAKOUT"
+            })
 
-        elif rect['detected'] and abs(current_price - rect['bottom'])/rect['bottom'] < 0.02:
-             plan["status"] = "EXECUTE (Support Bounce)"
-             plan["reason"] = f"VALUE: Box Support (Rp {rect['bottom']:,.0f})."
-             raw_sl = rect['bottom'] - (atr * 0.5)
-             trigger = True
+        # 2. Check Rectangle Support Bounce
+        if rect['detected'] and abs(current_price - rect['bottom'])/rect['bottom'] < 0.02:
+            valid_setups.append({
+                "reason": f"VALUE: Box Support Bounce (Rp {rect['bottom']:,.0f})",
+                "entry": rect['bottom'], # Support level
+                "sl": rect['bottom'] - (atr * 0.5),
+                "type": "SUPPORT"
+            })
 
-        elif ctx['low_cheat']['detected']:
-             plan["status"] = "EARLY ENTRY (Low Cheat)"
-             plan["reason"] = "VCP: Valid Low Cheat Setup."
-             raw_sl = current_price - (atr * 1.5)
-             trigger = True
+        # 3. Check Low Cheat (VCP)
+        if ctx['low_cheat']['detected']:
+            valid_setups.append({
+                "reason": "VCP: Valid Low Cheat Setup",
+                "entry": current_price,
+                "sl": current_price - (atr * 1.5),
+                "type": "EARLY_ENTRY"
+            })
              
-        elif best_strategy['is_triggered_today'] and "UPTREND" in trend_status:
-             plan["status"] = "EXECUTE (Trend Follow)"
-             plan["reason"] = f"STRATEGY: {best_strategy['strategy']} Triggered in Uptrend."
-             raw_sl = current_price - (atr * 2.5)
-             trigger = True
-             
-        # Explicitly handle the "Close to Resistance" case for clarity
-        elif rect['detected'] and rect['status'] == "INSIDE BOX":
-             plan["status"] = "WAIT"
-             dist_to_top = (rect['top'] - current_price) / current_price
-             if dist_to_top < 0.03:
-                 plan["reason"] = f"Price near resistance ({rect['top']:,.0f}). Wait for Breakout."
-             else:
-                 plan["reason"] = "No valid entry inside box. Wait for support or breakout."
+        # 4. Check Standard Trend Strategy
+        if best_strategy['is_triggered_today'] and "UPTREND" in trend_status:
+            valid_setups.append({
+                "reason": f"STRATEGY: {best_strategy['strategy']} in Uptrend",
+                "entry": current_price,
+                "sl": current_price - (atr * 2.5),
+                "type": "TREND"
+            })
 
-        if trigger:
-             plan['entry'] = self.adjust_to_tick_size(current_price)
-             plan['stop_loss'] = self.adjust_to_tick_size(raw_sl)
-             risk = plan['entry'] - plan['stop_loss']
-             if risk > 0:
-                 tp_3r = plan['entry'] + (risk * 3.0)
-                 plan['take_profit'] = self.adjust_to_tick_size(tp_3r)
-                 lots, risk_amt = self.calculate_position_size(plan['entry'], plan['stop_loss'])
-                 plan['lots'] = lots
-                 plan['risk_amt'] = risk_amt
-             else:
-                 plan['status'] = "WAIT"
-                 plan['reason'] = "Risk Invalid (Stop > Entry)"
+        # 5. Check Channel Support (New Geometry)
+        geo = ctx['geo']
+        if geo['pattern'] != "None" and "Channel" in geo['pattern'] and "Support" in geo.get('prediction', ''):
+             valid_setups.append({
+                "reason": f"GEOMETRY: {geo['pattern']} Support Bounce",
+                "entry": current_price,
+                "sl": current_price - (atr * 1.0),
+                "type": "CHANNEL"
+            })
+
+        # --- DECISION LOGIC ---
+        if not valid_setups:
+            # Handle the "Close to Resistance" warning if no other buy signal exists
+            if rect['detected'] and rect['status'] == "INSIDE BOX":
+                 dist_to_top = (rect['top'] - current_price) / current_price
+                 if dist_to_top < 0.03:
+                     plan["reason"] = f"Price near resistance ({rect['top']:,.0f}). Wait for Breakout."
+                 else:
+                     plan["reason"] = "No valid entry inside box. Wait for support or breakout."
+            return plan
+
+        # If we have valid setups, combine them
+        # We prioritize the setup with the highest Entry price (to catch momentum) 
+        # OR strictly follow a priority list. Let's just combine reasons.
+        
+        primary_setup = valid_setups[0] # Default to the first found (highest priority based on code order)
+        
+        combined_reasons = [s['reason'] for s in valid_setups]
+        final_reason = " + ".join(combined_reasons)
+        
+        # Calculate Final Plan values based on the Primary Setup
+        entry_price = self.adjust_to_tick_size(primary_setup['entry'])
+        # If current price is higher than calculated entry (e.g. Breakout), use current price to be realistic
+        if current_price > entry_price:
+            entry_price = current_price
+
+        stop_loss = self.adjust_to_tick_size(primary_setup['sl'])
+        
+        # Safety: Ensure Stop Loss is below Entry
+        if stop_loss >= entry_price:
+            stop_loss = self.adjust_to_tick_size(entry_price - atr)
+
+        risk = entry_price - stop_loss
+        
+        if risk > 0:
+            plan['status'] = "EXECUTE"
+            plan['reason'] = final_reason
+            plan['entry'] = entry_price
+            plan['stop_loss'] = stop_loss
+            
+            # Target 3R
+            plan['take_profit'] = self.adjust_to_tick_size(entry_price + (risk * 3.0))
+            
+            # Sizing
+            lots, risk_amt = self.calculate_position_size(plan['entry'], plan['stop_loss'])
+            plan['lots'] = lots
+            plan['risk_amt'] = risk_amt
+        else:
+             plan['status'] = "WAIT"
+             plan['reason'] = "Risk Invalid (Stop > Entry)"
+
         return plan
 
     def calculate_probability(self, best_strategy, context, trend_template):
