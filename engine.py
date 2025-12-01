@@ -747,19 +747,16 @@ class StockAnalyzer:
         
         window = self.df.iloc[-window_size:].copy()
         
-        # Quantile-based Box (Filters out noise wicks)
         box_top = window['Close'].quantile(0.95)
         box_bot = window['Close'].quantile(0.05)
         
-        # Tightness Check (Box shouldn't be too wide)
         height_pct = (box_top - box_bot) / box_bot
         if height_pct > 0.25: return res
         
         curr = self.df['Close'].iloc[-1]
         
-        # Status Logic
-        if curr > (box_top * 1.05): return res # Too far gone
-        if curr < (box_bot * 0.95): return res # Breakdown
+        if curr > (box_top * 1.05): return res 
+        if curr < (box_bot * 0.95): return res 
         
         status = "INSIDE BOX"
         if curr > box_top:
@@ -778,20 +775,15 @@ class StockAnalyzer:
         return res
 
     def detect_rectangle_pattern(self):
-        # 1. Try Short Term (15 days) - "Micro Base" / "Flag"
-        # Priority: High
         res_short = self._scan_box(15)
         if res_short['detected'] and res_short['status'] != "INSIDE BOX":
-             # If actionable (Breakout/Bounce), return immediately
              return res_short
 
-        # 2. Try Medium Term (50 days) - "Base"
         res_med = self._scan_box(50)
         
-        # If Short detected "Inside Box" but Medium detected "Breakout", prefer Medium
         if res_short['detected'] and res_med['detected']:
              if res_med['status'] == "FRESH BREAKOUT": return res_med
-             return res_short # Default to shorter pattern
+             return res_short 
         
         if res_short['detected']: return res_short
         if res_med['detected']: return res_med
@@ -963,6 +955,15 @@ class StockAnalyzer:
              plan["reason"] = f"STRATEGY: {best_strategy['strategy']} Triggered in Uptrend."
              raw_sl = current_price - (atr * 2.5)
              trigger = True
+             
+        # Explicitly handle the "Close to Resistance" case for clarity
+        elif rect['detected'] and rect['status'] == "INSIDE BOX":
+             plan["status"] = "WAIT"
+             dist_to_top = (rect['top'] - current_price) / current_price
+             if dist_to_top < 0.03:
+                 plan["reason"] = f"Price near resistance ({rect['top']:,.0f}). Wait for Breakout."
+             else:
+                 plan["reason"] = "No valid entry inside box. Wait for support or breakout."
 
         if trigger:
              plan['entry'] = self.adjust_to_tick_size(current_price)
@@ -983,8 +984,6 @@ class StockAnalyzer:
         base_prob = best_strategy.get('win_rate', 50)
         if base_prob < 0: base_prob = 50
         
-        # Use sigmoid-like dampening to prevent overconfidence
-        # Base: 50% -> Max movement from signals capped at +/- 40%
         signal_score = 0
         
         if trend_template["status"] in ["PERFECT UPTREND (Stage 2)", "STRONG UPTREND"]: signal_score += 15
@@ -1000,11 +999,7 @@ class StockAnalyzer:
         if "Success" in context['pattern_stats'].get('verdict', ''): signal_score += 5
         if "Bullish" in context['candle']['sentiment']: signal_score += 5
 
-        # Blend historical win rate with current signal strength
-        # Weight: 40% History, 60% Current Signal
         final_prob = (base_prob * 0.4) + (50 + signal_score) * 0.6
-        
-        # Hard caps
         final_prob = max(10, min(90, final_prob))
         
         verdict = "LOW PROBABILITY"
