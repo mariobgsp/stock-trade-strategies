@@ -269,21 +269,14 @@ class StockAnalyzer:
                 regime = "BEARISH"
         return regime
 
-    # --- UPDATED: Weekly Trend Check (Sniper Optimization) ---
     def check_weekly_trend(self):
         try:
-            # Resample daily data to weekly
             logic = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
             weekly_df = self.df.resample('W').apply(logic).dropna()
-            
             if len(weekly_df) < 30: return "UNKNOWN"
-
-            # Simple Weekly EMA 30 (equivalent to Daily 150)
             weekly_df['EMA_30'] = weekly_df['Close'].ewm(span=30, adjust=False).mean()
-            
             curr = weekly_df['Close'].iloc[-1]
             ema = weekly_df['EMA_30'].iloc[-1]
-            
             if curr > ema: return "UPTREND"
             return "DOWNTREND"
         except: return "UNKNOWN"
@@ -399,15 +392,26 @@ class StockAnalyzer:
         except Exception: pass
         return res
 
+    # --- UPDATED: STRICT BACKTEST (SNIPER RULE > 1.5x) ---
     def backtest_volume_breakout_behavior(self):
         res = {"accuracy": "N/A", "avg_return_5d": 0, "count": 0, "behavior": "Unknown", "best_horizon": 0}
         try:
             if self.data_len < 100: return res
             min_liq = self.config["MIN_DAILY_VOL"]
             tx_value = self.df['Close'] * self.df['Volume']
-            signals = ((self.df['Close'] > self.df['Open']) & (self.df['Close'] > self.df['Close'].shift(1)) & (self.df['Volume'] > self.df['VOL_MA']) & (tx_value > min_liq))
+            
+            # --- SNIPER UPGRADE: Use 1.5x Volume Rule for Backtest too ---
+            signals = (
+                (self.df['Close'] > self.df['Open']) & 
+                (self.df['Close'] > self.df['Close'].shift(1)) & 
+                (self.df['Volume'] > 1.5 * self.df['VOL_MA']) & # Strict Rule
+                (tx_value > min_liq)
+            )
+            
             breakout_indices = self.df.index[signals]
-            if len(breakout_indices) < 5: return res
+            if len(breakout_indices) < 3: # Relaxed min count slightly as strict rule yields fewer trades
+                 return res
+                 
             best_win_rate = -1
             best_stats = None
             numeric_indices = [self.df.index.get_loc(i) for i in breakout_indices]
@@ -1070,6 +1074,8 @@ class StockAnalyzer:
         base_prob = best_strategy.get('win_rate', 50)
         if base_prob < 0: base_prob = 50
         
+        # Use sigmoid-like dampening to prevent overconfidence
+        # Base: 50% -> Max movement from signals capped at +/- 40%
         signal_score = 0
         
         if trend_template["status"] in ["PERFECT UPTREND (Stage 2)", "STRONG UPTREND"]: signal_score += 15
@@ -1085,7 +1091,11 @@ class StockAnalyzer:
         if "Success" in context['pattern_stats'].get('verdict', ''): signal_score += 5
         if "Bullish" in context['candle']['sentiment']: signal_score += 5
 
+        # Blend historical win rate with current signal strength
+        # Weight: 40% History, 60% Current Signal
         final_prob = (base_prob * 0.4) + (50 + signal_score) * 0.6
+        
+        # Hard caps
         final_prob = max(10, min(90, final_prob))
         
         verdict = "LOW PROBABILITY"
