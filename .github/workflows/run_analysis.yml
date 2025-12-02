@@ -38,7 +38,7 @@ jobs:
     - name: Analyze Stock 2
       run: python main.py MBMA --period 2y --balance 1000000
     - name: Analyze Stock 3
-      run: python main.py ADMR --period 2y --balance 1000000
+      run: python main.py HAIS --period 2y --balance 1000000
     - name: Analyze Stock 4
       run: python main.py AVIA --period 2y --balance 1000000
     - name: Analyze Stock 5
