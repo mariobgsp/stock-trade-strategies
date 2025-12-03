@@ -4,7 +4,7 @@ on:
   push:
     branches: 
       - "run-analysis"
-      - "main"
+      - "run-bandar-analysis"
     paths:
       - '**.py'             
       - 'requirements.txt'   
@@ -29,21 +29,29 @@ jobs:
         python -m pip install --upgrade pip setuptools wheel
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-    # - name: Analyze BBCA (Standard)
-    #   run: python main.py BBCA
-
     # Analyze with Custom Flag
-    - name: Analyze Stock 1
-      run: python main.py ELSA --period 2y --balance 1000000
-    - name: Analyze Stock 2
-      run: python main.py MBMA --period 2y --balance 1000000
-    - name: Analyze Stock 3
-      run: python main.py ADMR --period 2y --balance 1000000
-    - name: Analyze Stock 4
-      run: python main.py AVIA --period 2y --balance 1000000
-    - name: Analyze Stock 5
-      run: python main.py HRUM --period 2y --balance 1000000
+    # - name: Analyze Stock 1
+    #   run: python main.py ELSA --period 2y --balance 1000000
+    # - name: Analyze Stock 2
+    #   run: python main.py MBMA --period 2y --balance 1000000
+    # - name: Analyze Stock 3
+    #   run: python main.py ADMR --period 2y --balance 1000000
+    # - name: Analyze Stock 4
+    #   run: python main.py AVIA --period 2y --balance 1000000
+    # - name: Analyze Stock 5
+    #   run: python main.py HRUM --period 2y --balance 1000000
 
+    # analyze bandar
+    - name: Analyze Bandar 1
+      run: python bandar_detector.py ELSA.JK
+    - name: Analyze Bandar 2
+      run: python bandar_detector.py MBMA.JK
+    - name: Analyze Bandar 3
+      run: python bandar_detector.py ADMR.JK
+    - name: Analyze Bandar 4
+      run: python bandar_detector.py AVIA.JK
+    - name: Analyze Bandar 5
+      run: python bandar_detector.py HRUM.JK
 
 
 
