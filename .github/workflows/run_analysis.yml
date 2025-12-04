@@ -45,13 +45,13 @@ jobs:
     - name: Analyze Bandar 1
       run: python bandar_detector.py DATA.JK
     - name: Analyze Bandar 2
-      run: python bandar_detector.py MBMA.JK
+      run: python bandar_detector.py MEDC.JK
     - name: Analyze Bandar 3
-      run: python bandar_detector.py ADMR.JK
+      run: python bandar_detector.py ARII.JK
     - name: Analyze Bandar 4
       run: python bandar_detector.py AVIA.JK
     - name: Analyze Bandar 5
-      run: python bandar_detector.py HRUM.JK
+      run: python bandar_detector.py SOCI.JK
 
 
 
