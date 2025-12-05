@@ -77,9 +77,9 @@ def print_report(data, balance):
 
     for s in sm['signals']: print(f"   - {s}")
     
-    # --- NEW: AI PREDICTION ---
+    # --- NEW: AI PREDICTION (GRADIENT BOOSTING) ---
     ml = data['context'].get('ml_prediction', {})
-    print(f"\n🤖 AI / MACHINE LEARNING (Random Forest)")
+    print(f"\n🤖 AI / MACHINE LEARNING (Gradient Boosting)")
     if ml.get('prediction') == "N/A":
          print(f"   Status: Insufficient Data")
     else:
@@ -144,8 +144,7 @@ def print_report(data, balance):
         print(f"\n   --- POSITION SIZING (Bal: {balance/1e6:.0f} Jt) ---")
         if plan.get('lots', 0) > 0:
             print(f"   🛒 BUY:      {plan['lots']} LOTS")
-            print(f"   � Capital:  Rp {plan['lots'] * 100 * plan['entry']:,.0f}")
-            print(f"   �🔥 Risk:     Rp {plan['risk_amt']:,.0f} ({DEFAULT_CONFIG['RISK_PER_TRADE_PCT']}%)")
+            print(f"   🔥 Risk:     Rp {plan['risk_amt']:,.0f} ({DEFAULT_CONFIG['RISK_PER_TRADE_PCT']}%)")
         else:
             print("   [!] Stop Loss too tight or risk too high.")
 
@@ -183,7 +182,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('ticker', nargs='?')
     
-    parser.add_argument('--balance', type=int, default=1000000, help="Account Balance (IDR)")
+    parser.add_argument('--balance', type=int, default=100_000_000, help="Account Balance (IDR)")
     parser.add_argument('--risk', type=float, default=1.0, help="Risk per trade (%)")
     
     parser.add_argument('--period', default=DEFAULT_CONFIG['BACKTEST_PERIOD'], help="Data period (e.g. 1y, 2y)")
@@ -219,3 +218,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
