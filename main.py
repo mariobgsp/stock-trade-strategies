@@ -57,7 +57,7 @@ def print_report(data, balance):
     print(f"   [EMA50: {ma.get('EMA_50', 0):,.0f}] | [EMA200: {ma.get('EMA_200', 0):,.0f}]")
     for det in tt['details']: print(f"   - {det}")
 
-    # 4. SMART MONEY (Detailed)
+    # 4. SMART MONEY (Detailed with ML)
     sm = data['context']['smart_money']
     symbol = "✅" if "BULLISH" in sm['status'] else "⚠️ " if "BEARISH" in sm['status'] else "🔹"
     print(f"\n{symbol} SMART MONEY (Bandarmology Proxy)")
@@ -74,12 +74,17 @@ def print_report(data, balance):
         g_spikes = metrics.get('green_spikes', 0)
         r_spikes = metrics.get('red_spikes', 0)
         print(f"   Big Moves: {g_spikes} Accumulation Days vs {r_spikes} Distribution Days")
+    
+    # --- NEW: BANDAR ML SECTION ---
+    b_ml = data['context'].get('bandar_ml', {})
+    prob = b_ml.get('probability', 0)
+    print(f"   AI Accumulation Score: {prob:.1f}% ({b_ml.get('verdict', 'Unknown')})")
 
     for s in sm['signals']: print(f"   - {s}")
     
-    # --- NEW: AI PREDICTION ---
+    # --- NEW: AI PREDICTION (GRADIENT BOOSTING) ---
     ml = data['context'].get('ml_prediction', {})
-    print(f"\n🤖 AI / MACHINE LEARNING (Random Forest)")
+    print(f"\n🤖 AI / MACHINE LEARNING (Gradient Boosting)")
     if ml.get('prediction') == "N/A":
          print(f"   Status: Insufficient Data")
     else:
@@ -88,33 +93,39 @@ def print_report(data, balance):
         print(f"   Forecast:   {emoji} {ml.get('prediction')} ({conf:.1f}% Confidence)")
         print(f"   Logic:      {ml.get('msg')}")
 
-    # 5. PATTERNS & PREDICTION (New & Improved)
-    print(f"\n💎 PATTERN ANALYSIS & PREDICTION")
+    # 5. SETUP & STRUCTURE (Replaced Patterns)
+    print(f"\n💎 SETUP & STRUCTURE")
     
-    # Historical Counts
-    counts = data['context'].get('pattern_counts', {})
-    print(f"   History:   {counts.get('Total', 0)} Patterns detected ({counts.get('Triangle', 0)} Triangles, {counts.get('Channel', 0)} Channels)")
+    # VCP Check
+    vcp = data['context'].get('vcp', {})
+    if vcp.get('detected'):
+         print(f"   [VCP DETECTED] {vcp['msg']}")
+         
+    # Low Cheat Check
+    lc = data['context'].get('low_cheat', {})
+    if lc.get('detected'):
+         print(f"   [LOW CHEAT]    {lc['msg']}")
+         
+    # Inside Bar Check
+    ib = data['context'].get('inside_bar', {})
+    if ib.get('detected'):
+         print(f"   [INSIDE BAR]   {ib['msg']} (High: {ib['high']:.0f}, Low: {ib['low']:.0f})")
     
-    # Current Active Pattern
-    rect = data['rectangle']
-    geo = data['context']['geo']
+    # Support & Resistance Levels
+    ctx = data['context']
+    print(f"\n   --- KEY LEVELS ---")
+    print(f"   Resistance: Rp {ctx.get('resistance', 0):,.0f}")
+    print(f"   Support:    Rp {ctx.get('support', 0):,.0f}")
     
-    found_pattern = False
-    
-    if rect['detected']:
-        found_pattern = True
-        print(f"   [RECTANGLE] Status: {rect['status']}")
-        print(f"               Range: {rect['bottom']:,.0f} - {rect['top']:,.0f}")
+    # Dynamic MA
+    best_ma = ctx.get('best_ma', {})
+    if best_ma.get('period', 0) > 0:
+        print(f"   Dynamic MA: EMA {best_ma['period']} @ Rp {best_ma['price']:,.0f} ({best_ma['bounces']} bounces)")
         
-    if geo['pattern'] != "None":
-        found_pattern = True
-        print(f"   [{geo['pattern'].upper()}]")
-        print(f"               Prediction: {geo.get('prediction', 'N/A')}")
-        print(f"               Action:     {geo.get('action', 'N/A')}")
-        if "Apex" in geo['msg']: print(f"               Note:       {geo['msg']}")
-
-    if not found_pattern:
-        print(f"   No distinct chart patterns currently forming.")
+    # Fib Levels
+    fibs = ctx.get('fib_levels', {})
+    if fibs:
+        print(f"   Golden Fib: Rp {fibs.get('0.618 (Golden)', 0):,.0f}")
 
     # 6. TRADE PLAN (Enhanced with Sizing & Reasoning)
     plan = data['plan']
@@ -145,7 +156,7 @@ def print_report(data, balance):
         if plan.get('lots', 0) > 0:
             print(f"   🛒 BUY:      {plan['lots']} LOTS")
             print(f"   � Capital:  Rp {plan['lots'] * 100 * plan['entry']:,.0f}")
-            print(f"   �🔥 Risk:     Rp {plan['risk_amt']:,.0f} ({DEFAULT_CONFIG['RISK_PER_TRADE_PCT']}%)")
+            print(f"   🔥 Risk:     Rp {plan['risk_amt']:,.0f} ({DEFAULT_CONFIG['RISK_PER_TRADE_PCT']}%)")
         else:
             print("   [!] Stop Loss too tight or risk too high.")
 
@@ -183,7 +194,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('ticker', nargs='?')
     
-    parser.add_argument('--balance', type=int, default=1000000, help="Account Balance (IDR)")
+    parser.add_argument('--balance', type=int, default=1000_000, help="Account Balance (IDR)")
     parser.add_argument('--risk', type=float, default=1.0, help="Risk per trade (%)")
     
     parser.add_argument('--period', default=DEFAULT_CONFIG['BACKTEST_PERIOD'], help="Data period (e.g. 1y, 2y)")

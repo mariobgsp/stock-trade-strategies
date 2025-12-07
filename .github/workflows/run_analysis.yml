@@ -31,15 +31,15 @@ jobs:
 
     # Analyze with Custom Flag
     - name: Analyze Stock 1
-      run: python main.py ELSA --period 2y --balance 1000000
+      run: python main.py ELSA --period 3y --balance 1000000
     - name: Analyze Stock 2
-      run: python main.py MBMA --period 2y --balance 1000000
+      run: python main.py MBMA --period 3y --balance 1000000
     - name: Analyze Stock 3
-      run: python main.py HAIS --period 2y --balance 1000000
+      run: python main.py PSAB --period 3y --balance 1000000
     - name: Analyze Stock 4
-      run: python main.py AVIA --period 2y --balance 1000000
+      run: python main.py AVIA --period 3y --balance 1000000
     - name: Analyze Stock 5
-      run: python main.py HRUM --period 2y --balance 1000000
+      run: python main.py HRUM --period 3y --balance 1000000
 
 
 

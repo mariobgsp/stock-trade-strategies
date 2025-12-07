@@ -7,8 +7,8 @@ import requests
 from bs4 import BeautifulSoup
 from textblob import TextBlob
 from datetime import datetime, timedelta
-# --- NEW: Sklearn Imports ---
-from sklearn.ensemble import RandomForestClassifier
+# --- NEW: Sklearn Imports (Gradient Boosting) ---
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.model_selection import train_test_split
 
 # ==========================================
@@ -550,24 +550,6 @@ class StockAnalyzer:
         except Exception: pass
         return res
 
-    def backtest_pattern_reliability(self):
-        if self.data_len < 200: return {"accuracy": "N/A", "count": 0}
-        wins = 0
-        total_patterns = 0
-        for i in range(100, self.data_len - 20, 5):
-            slice_df = self.df.iloc[:i]
-            res = self._detect_geometry_on_slice(slice_df)
-            if res["pattern"] != "None":
-                total_patterns += 1
-                future_window = self.df.iloc[i : i+20]
-                entry_price = slice_df['Close'].iloc[-1]
-                max_price = future_window['High'].max()
-                if max_price > (entry_price * 1.03): wins += 1
-        if total_patterns == 0: return {"accuracy": "N/A", "count": 0}
-        win_rate = (wins / total_patterns) * 100
-        verdict = "Likely Success" if win_rate > 60 else "Likely Fail" if win_rate < 40 else "Coin Flip"
-        return { "accuracy": f"{win_rate:.1f}%", "count": total_patterns, "verdict": verdict, "wins": wins }
-
     def optimize_stock(self, days_min, days_max):
         best_res = {"strategy": None, "win_rate": -1, "details": "N/A", "hold_days": 0, "is_triggered_today": False}
         rsi_levels = [self.config["RSI_LOWER"], self.config["RSI_LOWER"] + 10]
@@ -697,154 +679,6 @@ class StockAnalyzer:
             if is_contracting and near_breakout: return {"detected": True, "msg": f"Contraction from {depth_1*100:.1f}% to {depth_2*100:.1f}%."}
             else: return {"detected": False, "msg": "Volatility not contracting."}
         except Exception as e: return {"detected": False, "msg": f"Error: {str(e)}"}
-
-    def _detect_geometry_on_slice(self, df_slice):
-        result = {"pattern": "None", "msg": "", "bounds": None}
-        if len(df_slice) < 60: return result
-        df = df_slice[-60:].copy()
-        
-        df['is_peak'] = df['High'] == df['High'].rolling(window=5, center=True).max()
-        df['is_trough'] = df['Low'] == df['Low'].rolling(window=5, center=True).min()
-        peaks = df[df['is_peak']]
-        troughs = df[df['is_trough']]
-        
-        if len(peaks) < 2 or len(troughs) < 2: return result
-        
-        p2, p1 = peaks['High'].iloc[-1], peaks['High'].iloc[-2]
-        t2, t1 = troughs['Low'].iloc[-1], troughs['Low'].iloc[-2]
-        
-        p2_idx = df.index.get_loc(peaks.index[-1])
-        p1_idx = df.index.get_loc(peaks.index[-2])
-        t2_idx = df.index.get_loc(troughs.index[-1])
-        t1_idx = df.index.get_loc(troughs.index[-2])
-        
-        m_res = (p2 - p1) / (p2_idx - p1_idx) if (p2_idx - p1_idx) != 0 else 0
-        m_sup = (t2 - t1) / (t2_idx - t1_idx) if (t2_idx - t1_idx) != 0 else 0
-        
-        c_res = p2 - (m_res * p2_idx)
-        c_sup = t2 - (m_sup * t2_idx)
-        
-        if m_res < -0.01 and m_sup > 0.01: result["pattern"] = "Symmetrical Triangle"
-        elif abs(m_res) < 0.01 and m_sup > 0.01: result["pattern"] = "Ascending Triangle"
-        elif m_res < -0.01 and abs(m_sup) < 0.01: result["pattern"] = "Descending Triangle"
-        elif abs(m_res - m_sup) < 0.05 and abs(m_res) > 0.01:
-            if m_res > 0: result["pattern"] = "Ascending Channel"
-            else: result["pattern"] = "Descending Channel"
-
-        if "Triangle" in result["pattern"]:
-            apex_x = 0
-            if (m_res - m_sup) != 0: apex_x = (c_sup - c_res) / (m_res - m_sup)
-            result["apex_dist"] = apex_x - (len(df) - 1)
-            
-        result["bounds"] = {"m_res": m_res, "c_res": c_res, "m_sup": m_sup, "c_sup": c_sup, "len": len(df)}
-        return result
-
-    def scan_historical_patterns(self):
-        counts = {"Triangle": 0, "Rectangle": 0, "Channel": 0, "Total": 0}
-        step = 20
-        start_idx = 100
-        for i in range(start_idx, self.data_len - 20, step):
-            slice_df = self.df.iloc[:i]
-            geo = self._detect_geometry_on_slice(slice_df)
-            if geo["pattern"] != "None":
-                if "Channel" in geo["pattern"]: counts["Channel"] += 1
-                elif "Triangle" in geo["pattern"]: counts["Triangle"] += 1
-                counts["Total"] += 1
-                continue 
-        return counts
-
-    def detect_geometric_patterns(self):
-        res = self._detect_geometry_on_slice(self.df)
-        res["prediction"] = "N/A"
-        res["action"] = "N/A"
-        
-        if res["pattern"] != "None":
-            if "Triangle" in res["pattern"]:
-                dist = res.get("apex_dist", 100)
-                res["msg"] += f" Apex in ~{int(dist)} days."
-                if 0 < dist < 10:
-                    res["prediction"] = "Explosive Breakout Imminent (< 10 days)"
-                    res["action"] = "Watch for Volume Spike"
-                elif 0 < dist < 30:
-                    res["prediction"] = "Consolidating towards Apex"
-                    res["action"] = "Wait"
-                else:
-                    res["prediction"] = "Pattern Developing"
-                    res["action"] = "Monitor"
-            elif "Channel" in res["pattern"]:
-                bounds = res["bounds"]
-                current_idx = bounds["len"] - 1
-                res_price = (bounds["m_res"] * current_idx) + bounds["c_res"]
-                sup_price = (bounds["m_sup"] * current_idx) + bounds["c_sup"]
-                curr_price = self.df['Close'].iloc[-1]
-                if abs(curr_price - res_price) / res_price < 0.02:
-                    res["prediction"] = "At Channel Resistance"
-                    res["action"] = "Take Profit / Short"
-                elif abs(curr_price - sup_price) / sup_price < 0.02:
-                    res["prediction"] = "At Channel Support"
-                    res["action"] = "Buy Dip"
-                else:
-                    res["prediction"] = "Mid-Channel"
-                    res["action"] = "Wait for Edge"
-        return res
-
-    # --- UPDATED: Multi-Window Rectangle Detection ---
-    def _scan_box(self, window_size):
-        res = {"detected": False, "top": 0, "bottom": 0, "msg": "No Pattern", "status": "None"}
-        if self.data_len < window_size: return res
-        
-        window = self.df.iloc[-window_size:].copy()
-        
-        # Quantile-based Box (Filters out noise wicks)
-        box_top = window['Close'].quantile(0.95)
-        box_bot = window['Close'].quantile(0.05)
-        
-        # Tightness Check (Box shouldn't be too wide)
-        height_pct = (box_top - box_bot) / box_bot
-        if height_pct > 0.25: return res
-        
-        curr = self.df['Close'].iloc[-1]
-        
-        # Status Logic
-        if curr > (box_top * 1.05): return res # Too far gone
-        if curr < (box_bot * 0.95): return res # Breakdown
-        
-        status = "INSIDE BOX"
-        if curr > box_top:
-            if curr <= (box_top * 1.03): status = "FRESH BREAKOUT"
-            else: status = "EXTENDED (Caution)"
-        elif (curr - box_bot) / (box_top - box_bot) < 0.2:
-            status = "SUPPORT BOUNCE"
-            
-        res = {
-            "detected": True, 
-            "top": box_top, "bottom": box_bot, 
-            "height_pct": height_pct * 100, 
-            "status": status, 
-            "msg": f"Consolidation ({box_bot:,.0f}-{box_top:,.0f})"
-        }
-        return res
-
-    def detect_rectangle_pattern(self):
-        # 1. Try Short Term (15 days) - "Micro Base" / "Flag"
-        # Priority: High
-        res_short = self._scan_box(15)
-        if res_short['detected'] and res_short['status'] != "INSIDE BOX":
-             # If actionable (Breakout/Bounce), return immediately
-             return res_short
-
-        # 2. Try Medium Term (50 days) - "Base"
-        res_med = self._scan_box(50)
-        
-        # If Short detected "Inside Box" but Medium detected "Breakout", prefer Medium
-        if res_short['detected'] and res_med['detected']:
-             if res_med['status'] == "FRESH BREAKOUT": return res_med
-             return res_short # Default to shorter pattern
-        
-        if res_short['detected']: return res_short
-        if res_med['detected']: return res_med
-        
-        return {"detected": False, "top": 0, "bottom": 0, "msg": "No Pattern", "status": "None"}
 
     def detect_candle_patterns(self):
         res = {"pattern": "None", "sentiment": "Neutral"}
@@ -1026,7 +860,7 @@ class StockAnalyzer:
         return round(price / tick) * tick
 
     # --- UPDATED: Sniper Edition Trade Plan with Swing Adjustments & RSI/Stoch ---
-    def calculate_trade_plan_hybrid(self, ctx, trend_status, best_strategy, rect):
+    def calculate_trade_plan_hybrid(self, ctx, trend_status, best_strategy):
         # Default Plan
         plan = {
             "type": "HYBRID", 
@@ -1074,27 +908,6 @@ class StockAnalyzer:
                 "type": "INSIDE_BAR"
             })
 
-        # 1. Check Rectangle Breakout (Volume Thrust + Freshness)
-        if rect['detected'] and "FRESH BREAKOUT" in rect['status']:
-             # Check Volume Thrust (Current Vol > 1.5x Avg) - Simplification: Use RVOL
-             rvol = self.df['RVOL'].iloc[-1]
-             if rvol > 1.5:
-                 valid_setups.append({
-                    "reason": f"SNIPER: High Vol Breakout (Rp {rect['top']:,.0f})",
-                    "entry": rect['top'], 
-                    "sl": rect['top'] - (atr * 2.0), # Swing: Wider SL (2.0 ATR)
-                    "type": "BREAKOUT"
-                })
-
-        # 2. Check Rectangle Support Bounce
-        if rect['detected'] and abs(current_price - rect['bottom'])/rect['bottom'] < 0.02:
-            valid_setups.append({
-                "reason": f"VALUE: Box Support Bounce (Rp {rect['bottom']:,.0f})",
-                "entry": rect['bottom'], 
-                "sl": rect['bottom'] - (atr * 1.5), # Swing: Moderate SL (1.5 ATR)
-                "type": "SUPPORT"
-            })
-
         # 3. Check Low Cheat (VCP)
         if ctx['low_cheat']['detected']:
             valid_setups.append({
@@ -1125,25 +938,9 @@ class StockAnalyzer:
                     "type": "DYNAMIC_MA"
                 })
 
-        # 6. Check Channel Support
-        geo = ctx['geo']
-        if geo['pattern'] != "None" and "Channel" in geo['pattern'] and "Support" in geo.get('prediction', ''):
-             valid_setups.append({
-                "reason": f"GEOMETRY: {geo['pattern']} Support Bounce",
-                "entry": current_price,
-                "sl": current_price - (atr * 1.5),
-                "type": "CHANNEL"
-            })
-
         # --- DECISION LOGIC ---
         if not valid_setups:
-            # Handle the "Close to Resistance" warning
-            if rect['detected'] and rect['status'] == "INSIDE BOX":
-                 dist_to_top = (rect['top'] - current_price) / current_price
-                 if dist_to_top < 0.03:
-                     plan["reason"] = f"Price near resistance ({rect['top']:,.0f}). Wait for Breakout."
-                 else:
-                     plan["reason"] = "No valid entry inside box. Wait for support or breakout."
+            plan["reason"] = "No valid entry. Wait for support or breakout."
             return plan
 
         primary_setup = valid_setups[0]
@@ -1200,8 +997,7 @@ class StockAnalyzer:
         if context['vol_breakout']['detected']: signal_score += 5
         if context['vsa']['detected'] and "Stopping" in context['vsa']['msg']: signal_score += 5
         if context['low_cheat']['detected']: signal_score += 10
-        if context['vcp']['detected'] or context['geo']['pattern'] != "None": signal_score += 5
-        if "Success" in context['pattern_stats'].get('verdict', ''): signal_score += 5
+        if context['vcp']['detected']: signal_score += 5
         if "Bullish" in context['candle']['sentiment']: signal_score += 5
 
         # Blend historical win rate with current signal strength
@@ -1237,15 +1033,13 @@ class StockAnalyzer:
             m_ret = (self.market_df['Close'].iloc[-1] - self.market_df['Close'].iloc[-5]) / self.market_df['Close'].iloc[-5]
             if s_ret > m_ret: score += 1; reasons.append("Leader vs IHSG")
         if context['squeeze']['detected']: score += 2; reasons.append("TTM Squeeze Firing")
-        pat_stats = context.get('pattern_stats', {})
-        if "Success" in pat_stats.get('verdict', '') and context['geo']['pattern'] != "None":
-            score += 1; reasons.append(f"Historical {context['geo']['pattern']} Success")
+        
         verdict = "WEAK"
         if score >= 5: verdict = "ELITE SWING SETUP"
         elif score >= 3: verdict = "MODERATE"
         return score, verdict, reasons
     
-    # --- NEW: MACHINE LEARNING MODULE ---
+    # --- NEW: MACHINE LEARNING MODULE 1 (PRICE PREDICTION) ---
     def predict_machine_learning(self):
         try:
             if self.data_len < 100: return {"confidence": 0.0, "prediction": "N/A", "msg": "Insufficient Data for AI"}
@@ -1269,9 +1063,9 @@ class StockAnalyzer:
             X = ml_df[model_features].iloc[:-5] # All data except last 5 (no target)
             y = ml_df['Target'].iloc[:-5]
             
-            # 2. Train Model (Random Forest)
-            # n_estimators=100 (100 trees), random_state=42 (reproducible)
-            clf = RandomForestClassifier(n_estimators=100, min_samples_split=10, random_state=42)
+            # 2. Train Model (Gradient Boosting Classifier)
+            # Replaced RandomForestClassifier with GradientBoostingClassifier
+            clf = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42)
             clf.fit(X, y)
             
             # 3. Predict on Current Data
@@ -1289,6 +1083,54 @@ class StockAnalyzer:
             }
         except Exception as e:
             return {"confidence": 0.0, "prediction": "Error", "msg": str(e)}
+
+    # --- NEW: MACHINE LEARNING MODULE 2 (BANDAR/ACCUMULATION DETECTOR) ---
+    def predict_bandar_accumulation(self):
+        try:
+            if self.data_len < 150: return {"probability": 0, "verdict": "Insufficient Data"}
+            
+            # 1. Define Accumulation (Target)
+            # Accumulation is successful if Price rises > 5% in next 10 days WITHOUT dropping > 2% first
+            ml_df = self.df.copy()
+            
+            future_high = ml_df['High'].shift(-10).rolling(10).max()
+            future_low = ml_df['Low'].shift(-10).rolling(10).min()
+            
+            # Target: 1 if Pumped, 0 if not
+            ml_df['Target'] = ((future_high > ml_df['Close'] * 1.05) & (future_low > ml_df['Close'] * 0.98)).astype(int)
+            
+            # 2. Features for Smart Money (Volume & Money Flow focused)
+            ml_df['CMF'] = self.calc_cmf(ml_df['High'], ml_df['Low'], ml_df['Close'], ml_df['Volume'], 20)
+            ml_df['RVOL'] = ml_df['Volume'] / ml_df['Volume'].rolling(20).mean()
+            ml_df['NVI_Change'] = ml_df['NVI'].pct_change(5)
+            ml_df['VWAP_Ratio'] = ml_df['Close'] / ml_df['VWAP']
+            ml_df['Body_Size'] = (abs(ml_df['Close'] - ml_df['Open']) / (ml_df['High'] - ml_df['Low'])).fillna(0)
+            
+            features = ['CMF', 'RVOL', 'NVI_Change', 'VWAP_Ratio', 'Body_Size', 'MFI']
+            ml_df = ml_df.dropna()
+            
+            if len(ml_df) < 100: return {"probability": 0, "verdict": "Data Error"}
+
+            X = ml_df[features].iloc[:-10]
+            y = ml_df['Target'].iloc[:-10]
+            
+            # 3. Train Gradient Boosting
+            clf = GradientBoostingClassifier(n_estimators=100, learning_rate=0.05, max_depth=3, random_state=42)
+            clf.fit(X, y)
+            
+            # 4. Predict
+            last_row = ml_df[features].iloc[-1:].values
+            prob = clf.predict_proba(last_row)[0][1] * 100
+            
+            verdict = "DETECTED" if prob > 65 else "POSSIBLE" if prob > 40 else "NONE"
+            
+            return {
+                "probability": prob,
+                "verdict": verdict,
+                "msg": f"Accumulation Probability: {prob:.1f}%"
+            }
+            
+        except: return {"probability": 0, "verdict": "Error"}
 
     def get_market_context(self):
         last_price = self.df['Close'].iloc[-1]
@@ -1319,7 +1161,6 @@ class StockAnalyzer:
         }
         
         sm = self.analyze_smart_money_enhanced()
-        pat_counts = self.scan_historical_patterns()
         weekly_trend = self.check_weekly_trend() # Sniper: Weekly Trend Check
         
         # New: Dynamic MA
@@ -1330,28 +1171,26 @@ class StockAnalyzer:
 
         return {
             "price": last_price, "change_pct": change_pct, 
-            "ma_values": ma_values, "pattern_counts": pat_counts, 
             "support": support, "resistance": resistance,
             "dist_support": dist_supp, "fib_levels": fibs, 
             "atr": atr, "smart_money": sm, "weekly_trend": weekly_trend,
             "best_ma": best_ma, # Added dynamic MA
             "inside_bar": inside_bar, # Added inside bar
             "vcp": self.detect_vcp_pattern(), 
-            "geo": self.detect_geometric_patterns(),
             "candle": self.detect_candle_patterns(), 
             "vsa": self.detect_vsa_anomalies(),
             "low_cheat": self.detect_low_cheat(),
             "squeeze": self.detect_ttm_squeeze(),
             "fundamental": self.check_fundamentals(),
             "pivots": self.calculate_pivot_points(),
-            "pattern_stats": self.backtest_pattern_reliability(),
             "vol_breakout": self.detect_volume_breakout(),
             "sm_predict": self.backtest_smart_money_predictivity(),
             "breakout_behavior": self.backtest_volume_breakout_behavior(),
             "lc_stats": self.backtest_low_cheat_performance(), 
             "fib_stats": self.backtest_fib_bounce(),
             "ma_stats": self.backtest_ma_support_all(),
-            "ml_prediction": self.predict_machine_learning() # --- Added ML Call Here
+            "ml_prediction": self.predict_machine_learning(), # General Price Prediction
+            "bandar_ml": self.predict_bandar_accumulation() # --- NEW: Bandar Accumulation Prediction
         }
 
     def generate_final_report(self):
@@ -1359,7 +1198,6 @@ class StockAnalyzer:
         self.prepare_indicators()
         self.analyze_news_sentiment()
         
-        rect = self.detect_rectangle_pattern()
         liq = self.check_liquidity_quality()
         best_strategy = self.optimize_stock(1, 60)
         
@@ -1371,7 +1209,7 @@ class StockAnalyzer:
         val_score, val_verdict, val_reasons = self.validate_signal(action, ctx, trend_template)
         prob_data = self.calculate_probability(best_strategy, ctx, trend_template)
 
-        plan = self.calculate_trade_plan_hybrid(ctx, trend_template['status'], best_strategy, rect)
+        plan = self.calculate_trade_plan_hybrid(ctx, trend_template['status'], best_strategy)
 
         return {
             "ticker": self.ticker, "name": self.info.get('longName', self.ticker),
@@ -1381,6 +1219,6 @@ class StockAnalyzer:
             "validation": {"score": val_score, "verdict": val_verdict, "reasons": val_reasons},
             "probability": prob_data,
             "trend_template": trend_template, "liquidity": liq,
-            "rectangle": rect, "best_strategy": best_strategy,
+            "best_strategy": best_strategy,
             "is_ipo": self.data_len < 200, "days_listed": self.data_len
         }
