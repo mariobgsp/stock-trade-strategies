@@ -7,15 +7,15 @@ import requests
 from bs4 import BeautifulSoup
 from textblob import TextBlob
 from datetime import datetime, timedelta
-# --- NEW: Sklearn Imports (Gradient Boosting) ---
-from sklearn.ensemble import GradientBoostingClassifier
+# --- XGBoost Imports ---
+from xgboost import XGBClassifier, XGBRegressor
 from sklearn.model_selection import train_test_split
 
 # ==========================================
 # 1. DEFAULT CONFIGURATION
 # ==========================================
 DEFAULT_CONFIG = {
-    "BACKTEST_PERIOD": "2y",
+    "BACKTEST_PERIOD": "3y",
     "MAX_HOLD_DAYS": 60,
     "FIB_LOOKBACK_DAYS": 120,
     "RSI_PERIOD": 14,
@@ -1039,74 +1039,82 @@ class StockAnalyzer:
         elif score >= 3: verdict = "MODERATE"
         return score, verdict, reasons
     
-    # --- NEW: MACHINE LEARNING MODULE 1 (PRICE PREDICTION) ---
+    # --- NEW: MACHINE LEARNING MODULE 1 (PRICE PREDICTION - XGBOOST) ---
     def predict_machine_learning(self):
         try:
             if self.data_len < 100: return {"confidence": 0.0, "prediction": "N/A", "msg": "Insufficient Data for AI"}
             
-            # 1. Feature Engineering
             ml_df = self.df.copy()
-            ml_df['Target'] = (ml_df['Close'].shift(-5) > ml_df['Close']).astype(int) # Predict if price is higher in 5 days
+            # SUGGESTION 5: Lag Features (Sequence Awareness)
+            for col in ['RSI', 'CMF', 'RVOL']:
+                ml_df[f'{col}_Lag1'] = ml_df[col].shift(1)
+                ml_df[f'{col}_Lag2'] = ml_df[col].shift(2)
+
+            # SUGGESTION 2: Target > 2% Gain (Noise Reduction)
+            ml_df['Target'] = (ml_df['Close'].shift(-5) > (ml_df['Close'] * 1.02)).astype(int)
             
-            # Use safe features (Oscillators, Ratios) - NOT raw prices
-            features = ['RSI', 'CMF', 'MFI', 'ATR', 'RVOL', 'Close', 'EMA_50']
-            
-            # Normalize Price vs EMA
+            # Feature Engineering
+            ml_df['Dist_EMA200'] = (ml_df['Close'] - ml_df['EMA_200']) / ml_df['EMA_200']
             ml_df['Dist_EMA50'] = (ml_df['Close'] - ml_df['EMA_50']) / ml_df['EMA_50']
             ml_df['Price_Change'] = ml_df['Close'].pct_change()
             
-            model_features = ['RSI', 'CMF', 'MFI', 'RVOL', 'Dist_EMA50', 'Price_Change']
+            model_features = ['RSI', 'CMF', 'MFI', 'RVOL', 'Dist_EMA50', 'Dist_EMA200', 'Price_Change',
+                              'RSI_Lag1', 'RSI_Lag2', 'CMF_Lag1', 'CMF_Lag2', 'RVOL_Lag1']
             ml_df = ml_df.dropna()
             
             if len(ml_df) < 50: return {"confidence": 0.0, "prediction": "N/A", "msg": "Data clean failed"}
 
-            X = ml_df[model_features].iloc[:-5] # All data except last 5 (no target)
+            # SUGGESTION 4 (Spirit of Walk-Forward): Standard Fit on temporal data (no shuffle)
+            X = ml_df[model_features].iloc[:-5] 
             y = ml_df['Target'].iloc[:-5]
             
-            # 2. Train Model (Gradient Boosting Classifier)
-            # Replaced RandomForestClassifier with GradientBoostingClassifier
-            clf = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42)
+            # XGBoost with Regularization
+            clf = XGBClassifier(n_estimators=50, learning_rate=0.1, max_depth=3, reg_alpha=0.1, reg_lambda=1.0, random_state=42, eval_metric='logloss')
             clf.fit(X, y)
             
-            # 3. Predict on Current Data
             last_row = ml_df[model_features].iloc[-1:].values
             prediction = clf.predict(last_row)[0]
-            probability = clf.predict_proba(last_row)[0][1] # Probability of Class 1 (Up)
+            probability = clf.predict_proba(last_row)[0][1] 
             
             conf_pct = probability * 100
-            sentiment = "BULLISH" if conf_pct > 50 else "BEARISH"
+            
+            # SUGGESTION 1: High Threshold (>70%)
+            if conf_pct > 70: 
+                sentiment = "BULLISH (High Conviction)"
+            elif conf_pct < 30:
+                sentiment = "BEARISH"
+            else:
+                sentiment = "NEUTRAL / NOISE"
             
             return {
                 "confidence": conf_pct,
                 "prediction": sentiment,
-                "msg": f"AI forecasts {sentiment} movement (5 Days)"
+                "msg": f"XGBoost Forecast (Strict Mode > 70%)"
             }
         except Exception as e:
             return {"confidence": 0.0, "prediction": "Error", "msg": str(e)}
 
-    # --- NEW: MACHINE LEARNING MODULE 2 (BANDAR/ACCUMULATION DETECTOR) ---
+    # --- NEW: MACHINE LEARNING MODULE 2 (BANDAR/ACCUMULATION DETECTOR - XGBOOST) ---
     def predict_bandar_accumulation(self):
         try:
             if self.data_len < 150: return {"probability": 0, "verdict": "Insufficient Data"}
             
-            # 1. Define Accumulation (Target)
-            # Accumulation is successful if Price rises > 5% in next 10 days WITHOUT dropping > 2% first
             ml_df = self.df.copy()
-            
             future_high = ml_df['High'].shift(-10).rolling(10).max()
             future_low = ml_df['Low'].shift(-10).rolling(10).min()
-            
-            # Target: 1 if Pumped, 0 if not
             ml_df['Target'] = ((future_high > ml_df['Close'] * 1.05) & (future_low > ml_df['Close'] * 0.98)).astype(int)
             
-            # 2. Features for Smart Money (Volume & Money Flow focused)
             ml_df['CMF'] = self.calc_cmf(ml_df['High'], ml_df['Low'], ml_df['Close'], ml_df['Volume'], 20)
             ml_df['RVOL'] = ml_df['Volume'] / ml_df['Volume'].rolling(20).mean()
             ml_df['NVI_Change'] = ml_df['NVI'].pct_change(5)
             ml_df['VWAP_Ratio'] = ml_df['Close'] / ml_df['VWAP']
             ml_df['Body_Size'] = (abs(ml_df['Close'] - ml_df['Open']) / (ml_df['High'] - ml_df['Low'])).fillna(0)
             
-            features = ['CMF', 'RVOL', 'NVI_Change', 'VWAP_Ratio', 'Body_Size', 'MFI']
+            # Lags for Accumulation
+            ml_df['CMF_Lag1'] = ml_df['CMF'].shift(1)
+            ml_df['RVOL_Lag1'] = ml_df['RVOL'].shift(1)
+
+            features = ['CMF', 'RVOL', 'NVI_Change', 'VWAP_Ratio', 'Body_Size', 'MFI', 'CMF_Lag1', 'RVOL_Lag1']
             ml_df = ml_df.dropna()
             
             if len(ml_df) < 100: return {"probability": 0, "verdict": "Data Error"}
@@ -1114,15 +1122,14 @@ class StockAnalyzer:
             X = ml_df[features].iloc[:-10]
             y = ml_df['Target'].iloc[:-10]
             
-            # 3. Train Gradient Boosting
-            clf = GradientBoostingClassifier(n_estimators=100, learning_rate=0.05, max_depth=3, random_state=42)
+            clf = XGBClassifier(n_estimators=50, learning_rate=0.05, max_depth=3, reg_alpha=0.1, random_state=42, eval_metric='logloss')
             clf.fit(X, y)
             
-            # 4. Predict
             last_row = ml_df[features].iloc[-1:].values
             prob = clf.predict_proba(last_row)[0][1] * 100
             
-            verdict = "DETECTED" if prob > 65 else "POSSIBLE" if prob > 40 else "NONE"
+            # Stricter Verdicts
+            verdict = "DETECTED" if prob > 75 else "POSSIBLE" if prob > 50 else "NONE"
             
             return {
                 "probability": prob,
@@ -1131,6 +1138,40 @@ class StockAnalyzer:
             }
             
         except: return {"probability": 0, "verdict": "Error"}
+
+    # --- NEW: MACHINE LEARNING MODULE 3 (SUPPORT LEVEL PREDICTION - XGBOOST REGRESSOR) ---
+    def predict_support_level_ml(self):
+        try:
+            if self.data_len < 100: return 0
+            
+            ml_df = self.df.copy()
+            ml_df['Target_Support'] = ml_df['Low'].shift(-5).rolling(window=5).min()
+            
+            ml_df['Low_Curr'] = ml_df['Low']
+            ml_df['EMA_50'] = ml_df['EMA_50']
+            ml_df['ATR'] = ml_df['ATR']
+            ml_df['RSI'] = ml_df['RSI']
+            ml_df['Dist_EMA200'] = (ml_df['Close'] - ml_df['EMA_200']) / ml_df['EMA_200'] # Regime Aware Support
+            
+            # Lags for Support
+            ml_df['Low_Lag1'] = ml_df['Low'].shift(1)
+
+            features = ['Low_Curr', 'EMA_50', 'ATR', 'RSI', 'Dist_EMA200', 'Low_Lag1']
+            ml_df = ml_df.dropna()
+            
+            X = ml_df[features].iloc[:-5]
+            y = ml_df['Target_Support'].iloc[:-5]
+            
+            # XGBoost Regressor
+            reg = XGBRegressor(n_estimators=50, max_depth=3, reg_alpha=0.1, random_state=42)
+            reg.fit(X, y)
+            
+            last_row = ml_df[features].iloc[-1:].values
+            predicted_support = reg.predict(last_row)[0]
+            
+            return predicted_support
+            
+        except: return 0
 
     def get_market_context(self):
         last_price = self.df['Close'].iloc[-1]
@@ -1171,6 +1212,7 @@ class StockAnalyzer:
 
         return {
             "price": last_price, "change_pct": change_pct, 
+            "ma_values": ma_values, 
             "support": support, "resistance": resistance,
             "dist_support": dist_supp, "fib_levels": fibs, 
             "atr": atr, "smart_money": sm, "weekly_trend": weekly_trend,
@@ -1190,7 +1232,8 @@ class StockAnalyzer:
             "fib_stats": self.backtest_fib_bounce(),
             "ma_stats": self.backtest_ma_support_all(),
             "ml_prediction": self.predict_machine_learning(), # General Price Prediction
-            "bandar_ml": self.predict_bandar_accumulation() # --- NEW: Bandar Accumulation Prediction
+            "bandar_ml": self.predict_bandar_accumulation(), # Bandar ML
+            "ai_support": self.predict_support_level_ml() # --- NEW: Support Prediction
         }
 
     def generate_final_report(self):

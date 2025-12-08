@@ -1,129 +1,164 @@
-# 🇮🇩 IHSG Ultimate Stock Scanner (V3.5 - Sniper Pro)
+# IHSG Ultimate Scanner (Sniper Edition)
 
-**"Precision Over Frequency. One Shot, One Kill."**
-
-A professional-grade CLI trading tool for the Indonesian Stock Exchange
-(IDX), optimized for high‑probability *Sniper* setups and disciplined
-Swing Trading risk management.
-
-------------------------------------------------------------------------
-
-## 🌟 New in V3.5 (Sniper Pro Update)
-
--   🦎 **Dynamic Chameleon MA** --- Automatically finds which MA
-    (10--200) the stock respects the most.\
--   🕯️ **Inside Bar Detection** --- Detects volatility coils ideal for
-    sniper entries.\
--   📊 **RS Score (0--99)** --- Ranks each stock versus IHSG to ensure
-    you trade leaders.\
--   ⚖️ **Swing--Sniper Calibration** --- 3.0 ATR stops, 6.0 ATR
-    targets.\
--   🧠 **Multi‑Timeframe Logic** --- Weekly trend + daily confirmation.
-
-------------------------------------------------------------------------
+A high-precision stock analysis tool designed for the Indonesian Stock
+Exchange (IDX/IHSG). This program combines classical Technical Analysis
+(Minervini Trend Template), Smart Money/Bandarmology logic, and advanced
+Machine Learning (XGBoost) to identify high-probability swing trading
+setups.
 
 ## 🚀 Key Features
 
-### 1. 🏦 Smart Money Forensics (Bandar Detector)
+### 1. 🤖 AI & Machine Learning (XGBoost)
 
--   VSA anomalies (Churning, Stopping Volume, No Demand)\
--   Stealth accumulation\
--   Net volume pressure\
--   NVI + VWAP institutional behavior
+The system uses Extreme Gradient Boosting (XGBoost) trained on
+historical data to provide three distinct predictions:
 
-### 2. 🛡️ Professional Risk Management (3R System)
+-   **Price Forecast:** Predicts Bullish/Bearish directional bias with
+    > confidence levels (Regime Aware).
 
--   Automatic lot sizing based on balance & risk %\
--   ATR‑based dynamic stop loss\
--   Trailing stop & breakeven signals
+-   **Bandar Accumulation AI:** Detects subtle volume and price
+    > footprints indicating Smart Money accumulation.
 
-### 3. 🧠 Hybrid Strategy Engine (Priority Order)
+-   **AI Support Projection:** Regresses a projected \"floor\" price for
+    > the next 5 days.
 
-1.  🚀 Sniper RSI + Stoch\
-2.  📦 Fresh Box Breakout\
-3.  💰 Support Bounce\
-4.  ⚡ Low Cheat (VCP)\
-5.  📈 Minervini Trend Following
+### 2. 💰 Smart Money Analysis (Bandarmology Proxy)
 
-### 4. 🔎 Algorithmic Backtesting
+Uses public data to approximate institutional activity:
 
--   Breakout reliability scoring\
--   VSA accuracy measurement\
--   Dynamic MA Fit ("magic line")
+-   **CMF & MFI Analysis:** Tracks money flow divergence.
 
-### 5. 📉 Pattern Recognition
+-   **NVI (Net Volume Index):** Detects accumulation on low volume days.
 
--   VCP\
--   Rectangles & Inside Bars\
--   Triangles & Channels
+-   **Stealth Accumulation:** Identifies high volume/low spread
+    > anomalies.
 
-------------------------------------------------------------------------
+-   **Distribution Detection:** Warns when selling pressure dominates.
+
+### 3. 💎 Setup & Structure
+
+Automatically detects specific price structures:
+
+-   **VCP (Volatility Contraction Pattern):** Detects tightening price
+    > action.
+
+-   **Low Cheat:** Identifies early entry points within a base.
+
+-   **Inside Bar:** Scans for coiling price action and breakout
+    > triggers.
+
+-   **TTM Squeeze:** Detects explosive energy building up (Bollinger
+    > Bands inside Keltner Channels).
+
+### 4. 📈 Trend & Fundamentals
+
+-   **Minervini Trend Template:** Checks specific moving average
+    > alignments (EMA 50/150/200) to ensure Stage 2 Uptrend.
+
+-   **Market Regime:** Filters signals based on the broader market
+    > (\^JKSE) health.
+
+-   **Fundamentals:** Checks Altman Z-Score, Market Cap, and
+    > Profitability.
+
+### 5. 🛡️ Risk Management (Sniper Logic)
+
+-   **Position Sizing:** Calculates exact lot size based on account
+    > balance and risk %.
+
+-   **R:R Calculation:** Projects 3R targets and Stop Losses based on
+    > ATR.
 
 ## 🛠️ Installation
 
-    pip install yfinance pandas numpy pandas_ta textblob beautifulsoup4 requests
+### Prerequisites
 
-------------------------------------------------------------------------
+-   Python 3.8 or higher.
 
-## 🖥️ Usage
+### Install Dependencies
 
-### Quick Start
+Run the following command to install all required libraries, including
+the Machine Learning packages:
 
-    python main.py BBCA
+pip install yfinance pandas numpy requests beautifulsoup4 textblob
+xgboost scikit-learn
 
-### Power User Mode
+## 💻 Usage
 
-    python main.py BMRI --balance 500000000 --risk 2.0
+Run the scanner from your terminal using main.py.
 
-### Full Argument List
+### Basic Scan
 
-  Flag        Description                     Default
-  ----------- ------------------------------- -------------
-  ticker      Stock Code (e.g., BBRI, GOTO)   Required
-  --balance   Account Balance (IDR)           100,000,000
-  --risk      Risk per trade (%)              1.0%
-  --period    Data lookback                   2y
-  --sl        Stop Loss ATR Multiplier        3.0
-  --tp        Take Profit ATR Multiplier      6.0
-  --min_vol   Min daily transaction (IDR)     1 Billion
+Analyze a specific stock ticker (e.g., BBCA, ANTM, TLKM):
 
-------------------------------------------------------------------------
+python main.py BBCA
 
-## 📊 Sample Output Preview
+*Note: You do not need to add .JK, the system adds it automatically.*
 
-    STOCK: Bank Central Asia Tbk (BBCA)
-    PRICE: Rp 10,200 (+1.50%)
+### Advanced Configuration
 
-    LIQUIDITY: Healthy (525.50B)
+You can customize the simulation parameters using flags:
 
-    TREND HEALTH:
-      Daily:  PERFECT UPTREND (6/6)
-      Weekly: UPTREND
-      RS:     85/99
+python main.py BMRI \--period 5y \--risk 2.0 \--balance 50000000
 
-    SMART MONEY:
-      Bullish Accumulation
-      Buy Pressure: 60.5%
-      VSA: Stopping Volume
+### Available Arguments
 
-    TRADE PLAN:
-      ACTION: BUY
-      ENTRY:  Rp 10,200
-      SL:     Rp 9,900
-      TP:     Rp 12,000
-      MGMT:   Move SL to BE at Rp 10,500 (1R)
+  -----------------------------------------------------------------------
+  **Flag**                **Default**             **Description**
+  ----------------------- ----------------------- -----------------------
+  ticker                  (Required)              The stock symbol (e.g.,
+                                                  BBCA, GOTO).
 
-    FINAL VERDICT:
-      Strength: ELITE SWING SETUP (Score 5)
-      Probability: ~82.5%
-      Recommendation: WATCHLIST / BUY
+  \--balance              100,000,000             Your trading account
+                                                  balance in IDR.
 
-------------------------------------------------------------------------
+  \--risk                 1.0                     Risk per trade in
+                                                  percent (e.g., 1.0 =
+                                                  1%).
+
+  \--period               2y                      Historical data
+                                                  lookback period (e.g.,
+                                                  1y, 2y, 5y).
+
+  \--sl                   3.0                     Stop Loss multiplier (x
+                                                  ATR).
+
+  \--tp                   6.0                     Take Profit multiplier
+                                                  (x ATR).
+
+  \--min_vol              1,000,000,000           Minimum daily volume
+                                                  (IDR) to filter
+                                                  illiquid stocks.
+  -----------------------------------------------------------------------
+
+## 📊 Understanding the Report
+
+1.  **Liquidity Check:** Ensures the stock is tradable and not a
+    > \"fried\" stock with zero volume.
+
+2.  **Trend Health:** A score out of 6 based on Mark Minervini\'s trend
+    > template. Score \>= 4 is ideal.
+
+3.  **Smart Money:** Buying Pressure vs. Selling Pressure and
+    > Accumulation signals.
+
+4.  **AI/Machine Learning:**
+
+    -   *Forecast:* Directional prediction (Bullish/Bearish).
+
+    -   *Confidence:* Only trust signals \> 70%.
+
+    -   *Accumulation Score:* Probability that a \"Bandar\" is
+        > collecting shares.
+
+    -   *AI Support:* A predicted safe price level to place bids.
+
+5.  **Trade Plan:** The exact Entry, Stop Loss, and Target prices with
+    > calculated Lot sizes.
 
 ## ⚠️ Disclaimer
 
-This tool is for **educational purposes only**.\
-It uses mathematical and algorithmic proxies and does not represent real
-brokerage data.\
-Always perform your own research.\
-Built with Python & ❤️ for IHSG.
+This software is for educational and research purposes only. The
+predictions generated by XGBoost and the technical indicators are based
+on historical probabilities and do not guarantee future results. Always
+do your own research (DYOR) before trading.

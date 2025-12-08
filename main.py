@@ -10,7 +10,7 @@ def clear_screen():
 def print_header():
     print("="*65)
     print("      IHSG ULTIMATE SCANNER (V3.4 - Sniper Edition)      ")
-    print("      Precision Entry + Multi-Timeframe + Smart Money + AI")
+    print("      Precision Entry + Multi-Timeframe + Smart Money + XGBoost")
     print("="*65)
 
 def print_report(data, balance):
@@ -82,14 +82,14 @@ def print_report(data, balance):
 
     for s in sm['signals']: print(f"   - {s}")
     
-    # --- NEW: AI PREDICTION (GRADIENT BOOSTING) ---
+    # --- NEW: AI PREDICTION (XGBOOST) ---
     ml = data['context'].get('ml_prediction', {})
-    print(f"\n🤖 AI / MACHINE LEARNING (Gradient Boosting)")
+    print(f"\n🤖 AI / MACHINE LEARNING (XGBoost Strict Mode)")
     if ml.get('prediction') == "N/A":
          print(f"   Status: Insufficient Data")
     else:
         conf = ml.get('confidence', 0)
-        emoji = "🚀" if conf > 60 else "🐻" if conf < 40 else "⚖️"
+        emoji = "🚀" if "High Conviction" in ml.get('prediction') else "🐻" if "BEARISH" in ml.get('prediction') else "⚖️"
         print(f"   Forecast:   {emoji} {ml.get('prediction')} ({conf:.1f}% Confidence)")
         print(f"   Logic:      {ml.get('msg')}")
 
@@ -116,6 +116,8 @@ def print_report(data, balance):
     print(f"\n   --- KEY LEVELS ---")
     print(f"   Resistance: Rp {ctx.get('resistance', 0):,.0f}")
     print(f"   Support:    Rp {ctx.get('support', 0):,.0f}")
+    if ctx.get('ai_support', 0) > 0:
+        print(f"   AI Support: Rp {ctx.get('ai_support', 0):,.0f} (Projected Floor)")
     
     # Dynamic MA
     best_ma = ctx.get('best_ma', {})
@@ -194,8 +196,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('ticker', nargs='?')
     
-    parser.add_argument('--balance', type=int, default=1000_000, help="Account Balance (IDR)")
-    parser.add_argument('--risk', type=float, default=1.0, help="Risk per trade (%)")
+    parser.add_argument('--balance', type=int, default=10_000_000, help="Account Balance (IDR)")
+    parser.add_argument('--risk', type=float, default=1.0, help="Risk per trade")
     
     parser.add_argument('--period', default=DEFAULT_CONFIG['BACKTEST_PERIOD'], help="Data period (e.g. 1y, 2y)")
     parser.add_argument('--sl', type=float, default=DEFAULT_CONFIG['SL_MULTIPLIER'], help="Stop Loss ATR Multiplier")
