@@ -15,7 +15,8 @@ from sklearn.model_selection import train_test_split
 # 1. DEFAULT CONFIGURATION
 # ==========================================
 DEFAULT_CONFIG = {
-    "BACKTEST_PERIOD": "3y",
+    "ML_PERIOD": "5y",          # Long history for AI/ML training
+    "BACKTEST_PERIOD": "2y",    # Recent history for strategy validation
     "MAX_HOLD_DAYS": 60,
     "FIB_LOOKBACK_DAYS": 120,
     "RSI_PERIOD": 14,
@@ -77,7 +78,8 @@ class StockAnalyzer:
 
     def fetch_data(self):
         try:
-            period = self.config["BACKTEST_PERIOD"]
+            # FETCH 5 YEARS (ML_PERIOD) for ML context
+            period = self.config["ML_PERIOD"]
             self.df = yf.download(self.ticker, period=period, progress=False, auto_adjust=True, multi_level_index=False)
             try:
                 self.market_df = yf.download(self.market_ticker, period=period, progress=False, auto_adjust=True, multi_level_index=False)
@@ -205,6 +207,48 @@ class StockAnalyzer:
         pct_change = close.pct_change().fillna(0)
         pvt = (pct_change * volume).cumsum()
         return pvt
+
+    # --- NEW: HURST EXPONENT (Regime Filter) ---
+    def calc_hurst(self, series, max_lag=20):
+        try:
+            # Simplified R/S analysis for efficiency
+            lags = range(2, max_lag)
+            tau = [np.std(series.diff(lag)) for lag in lags]
+            poly = np.polyfit(np.log(lags), np.log(tau), 1)
+            return poly[0] * 2.0 
+        except: return 0.5
+
+    # --- NEW: Relative Strength vs Market ---
+    def calc_relative_strength_score(self):
+        try:
+            if self.market_df is None or len(self.market_df) < 100: return 0
+            
+            # Use 3M, 6M, 12M lookbacks
+            periods = [63, 126, 252]
+            score = 0
+            
+            stock_close = self.df['Close']
+            market_close = self.market_df['Close']
+            
+            # Align dates
+            aligned = pd.concat([stock_close, market_close], axis=1, keys=['Stock', 'Market']).dropna()
+            
+            if len(aligned) < 252: return 50 # Neutral default
+            
+            s = aligned['Stock']
+            m = aligned['Market']
+            
+            # Calculate ROC for each period
+            roc3 = (s.iloc[-1] / s.iloc[-63]) / (m.iloc[-1] / m.iloc[-63])
+            roc6 = (s.iloc[-1] / s.iloc[-126]) / (m.iloc[-1] / m.iloc[-126])
+            roc12 = (s.iloc[-1] / s.iloc[-252]) / (m.iloc[-1] / m.iloc[-252])
+            
+            # Weighted Score (More weight on recent 3M)
+            # > 1.0 means outperforming
+            rs_val = (roc3 * 0.4) + (roc6 * 0.3) + (roc12 * 0.3)
+            return round(rs_val * 100, 1) # Return as index (100 = Neutral)
+            
+        except: return 50
 
     def prepare_indicators(self):
         if self.df is None or self.df.empty: return
@@ -344,47 +388,162 @@ class StockAnalyzer:
         except Exception as e: res["details"].append(f"Error: {str(e)}")
         return res
 
-    def run_backtest_simulation(self, condition_series, hold_days):
-        if condition_series is None: return 0.0 
-        signals = self.df[condition_series].copy()
-        if signals.empty: return 0.0
-        future_close = self.df['Close'].shift(-hold_days)
-        current_close = self.df['Close']
-        returns = (future_close - current_close) / current_close
-        trade_returns = returns[condition_series].dropna()
-        if trade_returns.empty: return 0.0
-        return ((trade_returns > 0).sum() / len(trade_returns)) * 100
+    # --- VECTORIZED BACKTEST SLICING ---
+    def _get_backtest_start_index(self):
+        """Calculates integer index where backtest period starts."""
+        try:
+            period_str = self.config["BACKTEST_PERIOD"] # e.g. "2y"
+            years = int(period_str.replace("y", ""))
+            cutoff = self.df.index[-1] - pd.DateOffset(years=years)
+            # Find closest index after cutoff
+            return len(self.df[self.df.index < cutoff])
+        except:
+            return max(0, self.data_len - 500)
+
+    def optimize_stock(self, days_min, days_max):
+        """Vectorized Optimization"""
+        best_res = {"strategy": None, "win_rate": -1, "details": "N/A", "hold_days": 0, "is_triggered_today": False}
+        
+        start_idx = self._get_backtest_start_index()
+        close_np = self.df['Close'].values
+        total_len = len(close_np)
+
+        # Helper for vectorized calculation
+        def fast_sim(signal_indices_np):
+            best_wr = -1
+            best_d = 0
+            
+            # Loop hold days (scalar loop is fast if inner ops are vectorized)
+            for d in range(days_min, days_max + 1):
+                exit_indices = signal_indices_np + d
+                # Filter indices that go out of bounds
+                valid_mask = exit_indices < total_len
+                if not np.any(valid_mask): continue
+                
+                valid_entries = signal_indices_np[valid_mask]
+                valid_exits = exit_indices[valid_mask]
+                
+                entry_prices = close_np[valid_entries]
+                exit_prices = close_np[valid_exits]
+                
+                # vectorized return calc
+                returns = (exit_prices - entry_prices) / entry_prices
+                wins = np.sum(returns > 0)
+                count = len(returns)
+                
+                if count > 0:
+                    wr = (wins / count) * 100
+                    if wr > best_wr:
+                        best_wr = wr
+                        best_d = d
+            return best_wr, best_d
+
+        # 1. RSI Strategy
+        if 'RSI' in self.df.columns:
+            rsi_np = self.df['RSI'].values
+            for level in [self.config["RSI_LOWER"], self.config["RSI_LOWER"] + 10]:
+                # Identify signal indices within backtest window
+                # np.where returns tuple, get [0]
+                sig_idxs = np.where((rsi_np < level))[0]
+                sig_idxs = sig_idxs[sig_idxs >= start_idx] # Filter for backtest period
+                
+                if len(sig_idxs) > 0:
+                    wr, h_days = fast_sim(sig_idxs)
+                    if wr > best_res['win_rate']:
+                        best_res = {
+                            "strategy": "RSI Reversal", 
+                            "details": f"RSI < {level}", 
+                            "win_rate": wr, 
+                            "hold_days": h_days, 
+                            "is_triggered_today": self.df['RSI'].iloc[-1] < level
+                        }
+
+        # 2. MA Trend Strategy
+        if 'EMA_50' in self.df.columns and 'EMA_200' in self.df.columns:
+            ema50 = self.df['EMA_50'].values
+            ema200 = self.df['EMA_200'].values
+            
+            sig_idxs = np.where(ema50 > ema200)[0]
+            sig_idxs = sig_idxs[sig_idxs >= start_idx]
+            
+            if len(sig_idxs) > 0:
+                wr, h_days = fast_sim(sig_idxs)
+                if wr > best_res['win_rate']:
+                    best_res = {
+                        "strategy": "MA Trend", 
+                        "details": "Trend Following (50 > 200)", 
+                        "win_rate": wr, 
+                        "hold_days": h_days, 
+                        "is_triggered_today": (ema50[-1] > ema200[-1])
+                    }
+                    
+        return best_res
 
     def backtest_smart_money_predictivity(self):
         res = {"accuracy": "N/A", "avg_return": 0, "count": 0, "verdict": "Unproven", "best_horizon": 0}
         try:
-            if self.data_len < 100: return res
-            cond = (self.df['CMF'] > 0.05) & (self.df['MFI'] < 80) & (self.df['Close'] > self.df['VWAP'])
-            signals = self.df[cond]
-            if len(signals) < 5: return res 
+            start_idx = self._get_backtest_start_index()
+            # Vectorized Signals
+            # Conditions: CMF > 0.05, MFI < 80, Close > VWAP
+            cond = (
+                (self.df['CMF'].values > 0.05) & 
+                (self.df['MFI'].values < 80) & 
+                (self.df['Close'].values > self.df['VWAP'].values)
+            )
+            # Apply Backtest Period Filter
+            all_indices = np.where(cond)[0]
+            valid_indices = all_indices[all_indices >= start_idx]
+            
+            if len(valid_indices) < 5: return res
+            
+            close_np = self.df['Close'].values
+            high_np = self.df['High'].values
+            total_len = len(close_np)
+            
             best_win_rate = -1
             best_stats = None
+
+            # Check horizons
             for h in range(1, 41):
-                wins, total_return, valid_signals = 0, 0, 0
-                indices = signals.index
-                i = 0
-                while i < len(indices):
-                    idx = indices[i]
-                    loc = self.df.index.get_loc(idx)
-                    if loc > (self.data_len - (h + 1)): 
-                        i += 1; continue
-                    entry = self.df['Close'].iloc[loc]
-                    future_high = self.df['High'].iloc[loc+1 : loc+h+1].max()
-                    if future_high > (entry * 1.02): wins += 1
-                    exit_price = self.df['Close'].iloc[loc + h]
-                    total_return += (exit_price - entry) / entry
-                    valid_signals += 1
-                    i += 5
-                if valid_signals > 0:
-                    wr = (wins / valid_signals) * 100
+                # Filter indices that allow for h-day lookahead
+                usable_indices = valid_indices[valid_indices < (total_len - h - 1)]
+                if len(usable_indices) == 0: continue
+
+                # Vectorized Entry/Exit
+                entry_prices = close_np[usable_indices]
+                exit_prices = close_np[usable_indices + h]
+                
+                # Check for "Win" (High > Entry * 1.02 within h days)
+                # This part is harder to fully vectorize perfectly without a stride trick or loop
+                # Simplification: Check if Exit > Entry (Profit) OR just check max high
+                # We will stick to the loop logic but optimized with numpy slicing
+                
+                wins = 0
+                for i, idx in enumerate(usable_indices):
+                    # Only check every 5th signal to avoid overlap bias (simple sampling)
+                    if i % 5 != 0: continue
+                        
+                    future_highs = high_np[idx+1 : idx+h+1]
+                    if np.max(future_highs) > (entry_prices[i] * 1.02):
+                        wins += 1
+                
+                # Sample size reduction due to skip logic
+                valid_count = len(usable_indices) // 5
+                if valid_count > 0:
+                    wr = (wins / valid_count) * 100
+                    # Quick avg return calc (simple exit)
+                    returns = (exit_prices[::5] - entry_prices[::5]) / entry_prices[::5]
+                    avg_ret = np.mean(returns) * 100
+                    
                     if wr > best_win_rate:
                         best_win_rate = wr
-                        best_stats = {"accuracy": f"{wr:.1f}%", "avg_return": f"{(total_return / valid_signals) * 100:.1f}%", "count": valid_signals, "best_horizon": h}
+                        best_stats = {
+                            "accuracy": f"{wr:.1f}%", 
+                            "avg_return": f"{avg_ret:.1f}%", 
+                            "count": valid_count, 
+                            "best_horizon": h
+                        }
+
             if best_stats:
                 verdict = "POOR"
                 if best_win_rate > 70: verdict = "HIGHLY PREDICTIVE"
@@ -394,44 +553,62 @@ class StockAnalyzer:
         except Exception: pass
         return res
 
-    # --- UPDATED: STRICT BACKTEST (SNIPER RULE > 1.5x) ---
     def backtest_volume_breakout_behavior(self):
         res = {"accuracy": "N/A", "avg_return_5d": 0, "count": 0, "behavior": "Unknown", "best_horizon": 0}
         try:
-            if self.data_len < 100: return res
-            min_liq = self.config["MIN_DAILY_VOL"]
-            tx_value = self.df['Close'] * self.df['Volume']
+            start_idx = self._get_backtest_start_index()
             
-            # --- SNIPER UPGRADE: Use 1.5x Volume Rule for Backtest too ---
+            # Vectorized Signals
+            c = self.df['Close'].values
+            o = self.df['Open'].values
+            v = self.df['Volume'].values
+            v_ma = self.df['VOL_MA'].values
+            min_liq = self.config["MIN_DAILY_VOL"]
+            
+            # Logic: Green candle, Close > Prev Close, Vol > 1.5x MA, Liquidity OK
+            # Shifted arrays for "Prev Close"
+            c_prev = np.roll(c, 1)
+            c_prev[0] = c[0] # Handle first element
+            
             signals = (
-                (self.df['Close'] > self.df['Open']) & 
-                (self.df['Close'] > self.df['Close'].shift(1)) & 
-                (self.df['Volume'] > 1.5 * self.df['VOL_MA']) & # Strict Rule
-                (tx_value > min_liq)
+                (c > o) & 
+                (c > c_prev) & 
+                (v > 1.5 * v_ma) & 
+                ((c * v) > min_liq)
             )
             
-            breakout_indices = self.df.index[signals]
-            if len(breakout_indices) < 3: # Relaxed min count slightly as strict rule yields fewer trades
-                 return res
-                 
+            all_indices = np.where(signals)[0]
+            valid_indices = all_indices[all_indices >= start_idx]
+            
+            if len(valid_indices) < 3: return res
+
+            total_len = len(c)
             best_win_rate = -1
             best_stats = None
-            numeric_indices = [self.df.index.get_loc(i) for i in breakout_indices]
-            for h in range(1, 41): 
-                wins, total_return, valid_count = 0, 0, 0
-                for idx in numeric_indices:
-                    if idx > (self.data_len - (h + 1)): continue 
-                    entry_price = self.df['Close'].iloc[idx]
-                    future_price = self.df['Close'].iloc[idx + h]
-                    ret = (future_price - entry_price) / entry_price
-                    if ret > 0.02: wins += 1
-                    total_return += ret
-                    valid_count += 1
-                if valid_count > 0:
-                    wr = (wins / valid_count) * 100
+
+            for h in range(1, 41):
+                usable_indices = valid_indices[valid_indices < (total_len - h - 1)]
+                if len(usable_indices) == 0: continue
+                
+                entries = c[usable_indices]
+                exits = c[usable_indices + h]
+                
+                returns = (exits - entries) / entries
+                wins = np.sum(returns > 0.02) # Target > 2%
+                count = len(returns)
+                
+                if count > 0:
+                    wr = (wins / count) * 100
                     if wr > best_win_rate:
                         best_win_rate = wr
-                        best_stats = {"accuracy": f"{wr:.1f}%", "avg_return_5d": f"{(total_return / valid_count) * 100:.1f}%", "count": valid_count, "best_horizon": h}
+                        avg_ret = np.mean(returns) * 100
+                        best_stats = {
+                            "accuracy": f"{wr:.1f}%", 
+                            "avg_return_5d": f"{avg_ret:.1f}%", 
+                            "count": count, 
+                            "best_horizon": h
+                        }
+
             if best_stats:
                 behavior = "HONEST (Trend Follower)" if best_win_rate > 60 else "FAKEOUT (Fade the Pop)" if best_win_rate < 40 else "MIXED / CHOPPY"
                 best_stats["behavior"] = behavior
@@ -465,21 +642,32 @@ class StockAnalyzer:
         return res
 
     def backtest_low_cheat_performance(self):
+        # Optimization: Loop logic is complex due to slicing requirements, 
+        # keep standard but restrict loop range effectively
         res = {"accuracy": "N/A", "count": 0, "verdict": "Unproven"}
         try:
-            if self.data_len < 100: return res
+            start_idx = self._get_backtest_start_index()
+            # Ensure we have enough data before start_idx for lookbacks (20 days)
+            loop_start = max(start_idx, 20)
+            
             wins = 0
             valid_count = 0
-            for i in range(100, self.data_len - 20, 5):
-                slice_df = self.df.iloc[:i]
+            
+            # Step 5 to speed up
+            for i in range(loop_start, self.data_len - 10, 5):
+                # We can't easily vectorize _detect_low_cheat_on_slice because it uses rolling on slice
+                # Just slice minimally
+                slice_df = self.df.iloc[i-25:i] # Only need last 25 days for calculation
+                
                 if self._detect_low_cheat_on_slice(slice_df)["detected"]:
                     valid_count += 1
-                    entry = slice_df['Close'].iloc[-1]
-                    future = self.df.iloc[i : i+10]
-                    max_price = future['High'].max()
-                    min_price = future['Low'].min()
-                    if max_price > (entry * 1.03) and min_price > (entry * 0.98):
+                    entry = self.df['Close'].iloc[i-1]
+                    future_high = self.df['High'].iloc[i:i+10].max()
+                    future_low = self.df['Low'].iloc[i:i+10].min()
+                    
+                    if future_high > (entry * 1.03) and future_low > (entry * 0.98):
                         wins += 1
+            
             if valid_count == 0: return res
             win_rate = (wins / valid_count) * 100
             verdict = "HIGH PROBABILITY" if win_rate > 65 else "RISKY" if win_rate < 40 else "MODERATE"
@@ -490,22 +678,37 @@ class StockAnalyzer:
     def backtest_fib_bounce(self):
         res = {"accuracy": "N/A", "count": 0, "verdict": "Unproven"}
         try:
-            if self.data_len < 200: return res
+            start_idx = self._get_backtest_start_index()
+            lookback = self.config["FIB_LOOKBACK_DAYS"]
+            loop_start = max(start_idx, lookback + 1)
+            
             wins = 0
             count = 0
-            lookback = self.config["FIB_LOOKBACK_DAYS"]
-            for i in range(lookback + 20, self.data_len - 20, 10):
-                past_df = self.df.iloc[i-lookback:i]
-                future_df = self.df.iloc[i:i+15]
-                sh = past_df['High'].max()
-                sl = past_df['Low'].min()
+            
+            # Vectorize High/Low access
+            h_arr = self.df['High'].values
+            l_arr = self.df['Low'].values
+            
+            # Iterate
+            for i in range(loop_start, self.data_len - 15, 10):
+                # Local min/max for fib
+                curr_h_win = h_arr[i-lookback:i]
+                curr_l_win = l_arr[i-lookback:i]
+                sh = np.max(curr_h_win)
+                sl = np.min(curr_l_win)
                 rng = sh - sl
+                
+                if rng == 0: continue
+                
                 fib_618 = sh - (0.618 * rng)
-                current_low = self.df['Low'].iloc[i]
+                current_low = l_arr[i]
+                
                 if abs(current_low - fib_618) / fib_618 < 0.02:
                     count += 1
-                    if future_df['High'].max() > (current_low * 1.05):
+                    future_max = np.max(h_arr[i:i+15])
+                    if future_max > (current_low * 1.05):
                         wins += 1
+                        
             if count == 0: return res
             win_rate = (wins / count) * 100
             verdict = "GOLDEN ZONE" if win_rate > 65 else "WEAK SUPPORT" if win_rate < 40 else "NEUTRAL"
@@ -516,27 +719,54 @@ class StockAnalyzer:
     def backtest_ma_support_all(self):
         res = {"best_ma": "None", "accuracy": "N/A", "count": 0, "verdict": "Unknown", "details": {}}
         try:
-            if self.data_len < 200: return res
+            start_idx = self._get_backtest_start_index()
             best_win_rate = -1
             periods = [20, 50, 100, 200]
+            
+            low_np = self.df['Low'].values
+            high_np = self.df['High'].values
+            total_len = len(low_np)
+            
             for p in periods:
                 ma_col = f'EMA_{p}'
                 if ma_col not in self.df.columns: continue
-                slope = self.df[ma_col].diff(5) > 0
-                touched_ma = (self.df['Low'] <= self.df[ma_col]) & (self.df['High'] >= self.df[ma_col])
-                signals = touched_ma & slope
-                indices = self.df.index[signals]
-                numeric_indices = [self.df.index.get_loc(i) for i in indices]
-                if len(numeric_indices) < 3: continue
+                
+                ma_np = self.df[ma_col].values
+                
+                # Vectorized slope check (curr > prev-5)
+                # We need to ensure we don't access negative indices
+                if total_len < 6: continue
+                
+                ma_prev_5 = np.roll(ma_np, 5)
+                slope_ok = ma_np > ma_prev_5
+                
+                # Touch check
+                touched = (low_np <= ma_np) & (high_np >= ma_np)
+                
+                # Valid signals in backtest period
+                signals = slope_ok & touched
+                all_indices = np.where(signals)[0]
+                valid_indices = all_indices[all_indices >= start_idx]
+                
+                if len(valid_indices) < 3: continue
+                
                 wins = 0
                 valid_count = 0
-                for idx in numeric_indices:
-                    if idx > (self.data_len - 10): continue 
-                    if valid_count > 0 and idx - numeric_indices[valid_count-1] < 5: continue
-                    entry = self.df[ma_col].iloc[idx]
-                    future_high = self.df['High'].iloc[idx+1 : idx+10].max() 
+                last_idx = -100
+                
+                for idx in valid_indices:
+                    # Skip check if close to end
+                    if idx > (total_len - 10): continue
+                    # Debounce (skip if within 5 days of last check)
+                    if idx - last_idx < 5: continue
+                    
+                    entry = ma_np[idx]
+                    future_high = np.max(high_np[idx+1 : idx+10])
+                    
                     if future_high > (entry * 1.03): wins += 1
                     valid_count += 1
+                    last_idx = idx
+                    
                 if valid_count > 0:
                     wr = (wins / valid_count) * 100
                     res["details"][f"EMA{p}"] = f"{wr:.0f}% ({wins}/{valid_count})"
@@ -550,47 +780,91 @@ class StockAnalyzer:
         except Exception: pass
         return res
 
-    def optimize_stock(self, days_min, days_max):
-        best_res = {"strategy": None, "win_rate": -1, "details": "N/A", "hold_days": 0, "is_triggered_today": False}
-        rsi_levels = [self.config["RSI_LOWER"], self.config["RSI_LOWER"] + 10]
-
-        if 'RSI' in self.df.columns:
-            for level in rsi_levels:
-                condition = self.df['RSI'] < level
-                for days in range(days_min, days_max + 1):
-                    wr = self.run_backtest_simulation(condition, days)
-                    if wr > best_res['win_rate']:
-                        best_res = {"strategy": "RSI Reversal", "details": f"RSI < {level}", "win_rate": wr, "hold_days": days, "is_triggered_today": self.df['RSI'].iloc[-1] < level}
-        
-        if 'EMA_50' in self.df.columns:
-             condition = self.df['EMA_50'] > self.df['EMA_200'] 
-             for days in range(days_min, days_max + 1):
-                wr = self.run_backtest_simulation(condition, days)
-                if wr > best_res['win_rate']:
-                    best_res = {"strategy": "MA Trend", "details": "Trend Following (50 > 200)", "win_rate": wr, "hold_days": days, "is_triggered_today": True}
-        return best_res
-
-    # --- NEW: DYNAMIC BEST FIT MA ---
+    # --- NEW: STATISTICALLY VALID DYNAMIC MA (QUANT EDITION) ---
     def find_best_dynamic_ma(self):
-        best_ma = {"period": 0, "bounces": 0, "price": 0}
+        best_ma = {"period": 0, "score": 0, "price": 0, "win_rate": 0, "slope": 0}
         try:
-            close = self.df['Close']
-            low = self.df['Low']
+            # We use the full available data for this fit, 
+            # but apply heavy weighting to recent data.
             
+            c_arr = self.df['Close'].values
+            l_arr = self.df['Low'].values
+            h_arr = self.df['High'].values
+            total_len = len(c_arr)
+            
+            if total_len < 100: return best_ma
+            
+            # Recency Weights: Linear increase from 0.5 to 1.5 over the dataset
+            # This gives 3x more importance to recent data than the oldest data
+            weights = np.linspace(0.5, 1.5, total_len)
+            
+            # Search space: 20 to 200
             for p in range(20, 201, 5):
-                ema = close.ewm(span=p, adjust=False).mean()
-                touches = (low <= ema * 1.01) & (low >= ema * 0.99) & (close > ema)
-                bounces = touches.sum()
+                # 1. Calc EMA using pandas (fast enough for scalar loop)
+                ema = self.df['Close'].ewm(span=p, adjust=False).mean().values
                 
-                if bounces > best_ma["bounces"]:
-                    best_ma["period"] = p
-                    best_ma["bounces"] = bounces
-                    best_ma["price"] = ema.iloc[-1]
+                # 2. Calc Slope (Vectorized)
+                # Slope > 0 means EMA is rising
+                slope = np.zeros_like(ema)
+                slope[1:] = ema[1:] - ema[:-1]
+                
+                # 3. Identify Touches (The Setup)
+                # Zone: 1.5% around EMA (Slightly relaxed to catch wicks)
+                # Condition: Low dips into zone, Close holds above EMA, EMA is rising
+                touches = (l_arr <= ema * 1.015) & (l_arr >= ema * 0.985) & (c_arr > ema) & (slope > 0)
+                
+                touch_indices = np.where(touches)[0]
+                
+                if len(touch_indices) < 3: continue
+                
+                weighted_score = 0
+                wins = 0
+                valid_signals = 0
+                last_sig_idx = -10
+                
+                # 4. Validate Bounces (The Confirmation) - Vectorized loop
+                # Check if price moved +3% within next 5 days (Performance Validation)
+                for idx in touch_indices:
+                    if idx >= total_len - 5: continue # Skip if no future data
+                    if idx < 50: continue # Skip early noise
+                    
+                    # DEBOUNCE: Skip if signal is too close to previous (5 days)
+                    if idx - last_sig_idx < 5: continue
+                    
+                    future_high = np.max(h_arr[idx+1 : idx+6])
+                    entry_price = ema[idx] 
+                    
+                    if future_high > (entry_price * 1.03): # 3% bounce target
+                        wins += 1
+                        weighted_score += 1 * weights[idx] # Add weighted score
+                    else:
+                        weighted_score -= 0.5 * weights[idx] # Penalty for failure
+                        
+                    valid_signals += 1
+                    last_sig_idx = idx
+                
+                if valid_signals < 3: continue
+                
+                # Calculate Win Rate
+                win_rate = (wins / valid_signals) * 100
+                
+                # Selection Criteria: High Weighted Score AND Decent Win Rate (>50%)
+                if weighted_score > best_ma["score"] and win_rate > 50:
+                    best_ma = {
+                        "period": p,
+                        "score": round(weighted_score, 1),
+                        "price": ema[-1],
+                        "win_rate": round(win_rate, 1),
+                        "slope": slope[-1]
+                    }
             
-            if best_ma["bounces"] < 3: 
-                best_ma = {"period": 50, "bounces": 0, "price": self.df['EMA_50'].iloc[-1]} 
-                
-        except: pass
+            # Fallback if nothing good found
+            if best_ma["score"] == 0:
+                 best_ma = {"period": 0, "score": 0, "price": 0, "win_rate": 0, "slope": 0}
+
+        except Exception as e: 
+            pass
+            
         return best_ma
 
     # --- UPDATED: Fundamentals with Altman Z-Score ---
@@ -633,14 +907,18 @@ class StockAnalyzer:
         res = {"detected": False, "msg": ""}
         try:
             if self.data_len < 20: return res
-            sma20 = self.calc_sma(self.df['Close'], 20)
-            std20 = self.calc_std(self.df['Close'], 20)
+            # Use last values only for detection
+            c = self.df['Close']
+            sma20 = c.rolling(20).mean().iloc[-1]
+            std20 = c.rolling(20).std().iloc[-1]
             upper_bb = sma20 + (2.0 * std20)
             lower_bb = sma20 - (2.0 * std20)
-            atr20 = self.calc_atr(self.df['High'], self.df['Low'], self.df['Close'], 20)
+            
+            atr20 = self.df['ATR'].iloc[-1] # Assuming ATR already calc
             upper_kc = sma20 + (1.5 * atr20)
             lower_kc = sma20 - (1.5 * atr20)
-            is_squeeze = (upper_bb.iloc[-1] < upper_kc.iloc[-1]) and (lower_bb.iloc[-1] > lower_kc.iloc[-1])
+            
+            is_squeeze = (upper_bb < upper_kc) and (lower_bb > lower_kc)
             if is_squeeze: res = {"detected": True, "msg": "TTM Squeeze ON! Massive breakout imminent."}
         except Exception: pass
         return res
@@ -680,18 +958,70 @@ class StockAnalyzer:
             else: return {"detected": False, "msg": "Volatility not contracting."}
         except Exception as e: return {"detected": False, "msg": f"Error: {str(e)}"}
 
+    # --- NEW: Wyckoff Spring Detection ---
+    def detect_wyckoff_spring(self):
+        res = {"detected": False, "msg": "", "support_level": 0}
+        try:
+            if self.data_len < 30: return res
+            
+            # Look back 20-40 days for a support level
+            # Exclude last 5 days to find prior support established before current move
+            recent_window = self.df.iloc[-40:-5] 
+            if recent_window.empty: return res
+            
+            support_level = recent_window['Low'].min()
+            
+            # Check last 3 days for the "Spring" action
+            # Price dips below support but closes back above
+            last_few = self.df.iloc[-3:]
+            
+            for i in range(len(last_few)):
+                candle = last_few.iloc[i]
+                # Shakeout: Low below support
+                if candle['Low'] < support_level * 0.995: # 0.5% penetration to be significant
+                    # Recovery: Close back above support (strict)
+                    if candle['Close'] > support_level:
+                        res = {
+                            "detected": True, 
+                            "msg": f"Wyckoff Spring (Tested {support_level:,.0f} & Reclaimed)",
+                            "support_level": support_level
+                        }
+                        break
+        except: pass
+        return res
+
     def detect_candle_patterns(self):
         res = {"pattern": "None", "sentiment": "Neutral"}
         try:
             if self.data_len < 4: return res
             df = self.df.iloc[-4:].copy()
             df['Body'] = abs(df['Close'] - df['Open'])
-            c0, c1 = df.iloc[-1], df.iloc[-2]
-            is_green = c0['Close'] > c0['Open']
-            if not is_green and c0['Open'] > c1['Close'] and c0['Close'] < c1['Open']: 
+            avg_body = df['Body'].mean()
+            
+            c0 = df.iloc[-1] # Today
+            c1 = df.iloc[-2] # Yesterday
+            c2 = df.iloc[-3] # 2 days ago
+            
+            is_green_0 = c0['Close'] > c0['Open']
+            is_green_1 = c1['Close'] > c1['Open']
+            is_red_2 = c2['Close'] < c2['Open']
+            
+            # Existing Engulfing
+            if not is_green_0 and c0['Open'] > c1['Close'] and c0['Close'] < c1['Open']: 
                 res = {"pattern": "Bearish Engulfing", "sentiment": "Strong Reversal Down"}
-            elif is_green and c0['Close'] > c1['Open'] and c0['Open'] < c1['Close']: 
+            elif is_green_0 and c0['Close'] > c1['Open'] and c0['Open'] < c1['Close']: 
                 res = {"pattern": "Bullish Engulfing", "sentiment": "Strong Reversal Up"}
+            
+            # --- NEW: Morning Star ---
+            # 1. Long Red (c2)
+            # 2. Small Gap Down or Small Body (c1)
+            # 3. Strong Green closing > midpoint of Red (c0)
+            elif is_red_2 and (c2['Body'] > avg_body):
+                if c1['Body'] < (avg_body * 0.6): # Small body
+                    midpoint = (c2['Open'] + c2['Close']) / 2
+                    if is_green_0 and c0['Close'] > midpoint:
+                        res = {"pattern": "Morning Star", "sentiment": "Bullish Reversal"}
+
         except Exception: pass
         return res
 
@@ -775,15 +1105,42 @@ class StockAnalyzer:
             c0 = self.df.iloc[-1]
             score = 0
             
-            recent = self.df.iloc[-20:]
-            green_vol = recent[recent['Close'] > recent['Open']]['Volume'].sum()
-            red_vol = recent[recent['Close'] < recent['Open']]['Volume'].sum()
-            total_vol = green_vol + red_vol
-            buy_pressure = (green_vol / total_vol) * 100 if total_vol > 0 else 50
+            # --- PROFESSIONAL UPGRADE: CLV-based Volume Pressure ---
+            # Instead of naive Green/Red candles, we use Close Location Value (CLV)
+            # CLV = ((C - L) - (H - C)) / (H - L)
+            # This accounts for selling pressure inside a green candle (long upper wick)
+            # and buying pressure inside a red candle (long lower wick).
             
+            lookback = 20
+            recent = self.df.iloc[-lookback:].copy()
+            
+            # Calculate CLV (Money Flow Multiplier)
+            # Handle division by zero (if High == Low)
+            range_len = recent['High'] - recent['Low']
+            range_len = range_len.replace(0, 0.00001) # Avoid ZeroDiv
+            
+            recent['CLV'] = ((recent['Close'] - recent['Low']) - (recent['High'] - recent['Close'])) / range_len
+            
+            # Buy Volume = Volume * (CLV + 1) / 2
+            # Sell Volume = Volume * (1 - CLV) / 2
+            # Values range from 0 to Volume.
+            
+            recent['Buy_Vol'] = recent['Volume'] * (recent['CLV'] + 1) / 2
+            recent['Sell_Vol'] = recent['Volume'] * (1 - recent['CLV']) / 2
+            
+            total_buy_vol = recent['Buy_Vol'].sum()
+            total_sell_vol = recent['Sell_Vol'].sum()
+            total_vol = total_buy_vol + total_sell_vol
+            
+            buy_pressure = (total_buy_vol / total_vol) * 100 if total_vol > 0 else 50
+            
+            # --- END UPGRADE ---
+
+            # Old naive spike detection remains useful for "Aggression"
             avg_vol = recent['Volume'].mean()
             if avg_vol > 0:
                 spikes = recent[recent['Volume'] > 1.25 * avg_vol]
+                # Keep naive count for visual "days of interest"
                 green_spikes = len(spikes[spikes['Close'] > spikes['Open']])
                 red_spikes = len(spikes[spikes['Close'] < spikes['Open']])
             else:
@@ -813,9 +1170,9 @@ class StockAnalyzer:
                 score += 2; res['signals'].append("Stealth Accumulation (High Vol, Low Spread)")
 
             if buy_pressure > 60:
-                 score += 1; res['signals'].append(f"Buying Pressure Dominant ({buy_pressure:.0f}%)")
+                 score += 1; res['signals'].append(f"Institutional Net Buying ({buy_pressure:.0f}%)")
             elif buy_pressure < 40:
-                 score -= 1; res['signals'].append(f"Selling Pressure Dominant ({100-buy_pressure:.0f}%)")
+                 score -= 1; res['signals'].append(f"Institutional Net Selling ({100-buy_pressure:.0f}%)")
 
             spread = c0['High'] - c0['Low']
             avg_spread = self.df['ATR'].iloc[-1]
@@ -908,6 +1265,26 @@ class StockAnalyzer:
                 "type": "INSIDE_BAR"
             })
 
+        # --- NEW: Wyckoff Spring Setup ---
+        spring = ctx.get('wyckoff', {})
+        if spring.get('detected'):
+             valid_setups.append({
+                "reason": f"PATTERN: {spring['msg']}",
+                "entry": current_price,
+                "sl": spring['support_level'] * 0.98, # Stop below the spring low
+                "type": "REVERSAL"
+            })
+            
+        # --- NEW: Morning Star Setup ---
+        candle = ctx.get('candle', {})
+        if "Morning Star" in candle.get('pattern', ''):
+             valid_setups.append({
+                "reason": "PATTERN: Morning Star Reversal",
+                "entry": current_price,
+                "sl": current_price - (atr * 1.5),
+                "type": "REVERSAL"
+            })
+
         # 3. Check Low Cheat (VCP)
         if ctx['low_cheat']['detected']:
             valid_setups.append({
@@ -926,13 +1303,13 @@ class StockAnalyzer:
                 "type": "TREND"
             })
         
-        # 5. Dynamic MA Support
+        # 5. Dynamic MA Support (Updated logic)
         best_ma = ctx.get('best_ma', {})
-        if best_ma.get('bounces', 0) >= 3:
+        if best_ma.get('score', 0) > 3 and best_ma.get('win_rate', 0) > 50:
              ma_price = best_ma['price']
              if abs(current_price - ma_price) / ma_price < 0.015:
                  valid_setups.append({
-                    "reason": f"SNIPER: Bounce off Dynamic EMA {best_ma['period']}",
+                    "reason": f"SNIPER: Validated Dynamic EMA {best_ma['period']} (WR: {best_ma['win_rate']}%)",
                     "entry": ma_price,
                     "sl": ma_price - (atr * 1.5),
                     "type": "DYNAMIC_MA"
@@ -994,11 +1371,25 @@ class StockAnalyzer:
         if "BUYING" in context['smart_money']: signal_score += 10
         elif "SELLING" in context['smart_money']: signal_score -= 10
         
+        # --- NEW: Hurst Exponent Impact ---
+        hurst = context.get('hurst', 0.5)
+        if hurst > 0.6: signal_score += 10 # Strong Trend Mode
+        elif hurst < 0.4: signal_score -= 10 # Mean Reverting (Bad for breakouts)
+        
+        # --- NEW: Relative Strength Impact ---
+        rs_score = context.get('rs_score', 50)
+        if rs_score > 70: signal_score += 10
+        elif rs_score < 30: signal_score -= 10
+        
         if context['vol_breakout']['detected']: signal_score += 5
         if context['vsa']['detected'] and "Stopping" in context['vsa']['msg']: signal_score += 5
         if context['low_cheat']['detected']: signal_score += 10
         if context['vcp']['detected']: signal_score += 5
         if "Bullish" in context['candle']['sentiment']: signal_score += 5
+        
+        # --- NEW: Pattern Boost ---
+        if context.get('wyckoff', {}).get('detected'): signal_score += 15
+        if "Morning Star" in context.get('candle', {}).get('pattern', ''): signal_score += 10
 
         # Blend historical win rate with current signal strength
         # Weight: 40% History, 60% Current Signal
@@ -1034,6 +1425,18 @@ class StockAnalyzer:
             if s_ret > m_ret: score += 1; reasons.append("Leader vs IHSG")
         if context['squeeze']['detected']: score += 2; reasons.append("TTM Squeeze Firing")
         
+        # --- NEW: Pattern Validation ---
+        if context.get('wyckoff', {}).get('detected'): 
+            score += 3; reasons.append("Wyckoff Spring (Strong Reversal)")
+        if "Morning Star" in context.get('candle', {}).get('pattern', ''):
+            score += 2; reasons.append("Morning Star Pattern")
+            
+        # --- NEW: Quant Validation ---
+        if context.get('hurst', 0.5) > 0.55:
+            score += 1; reasons.append(f"Hurst {context['hurst']:.2f} (Trending)")
+        if context.get('rs_score', 50) > 60:
+            score += 1; reasons.append(f"RS Score {context['rs_score']} (Outperforming)")
+        
         verdict = "WEAK"
         if score >= 5: verdict = "ELITE SWING SETUP"
         elif score >= 3: verdict = "MODERATE"
@@ -1042,6 +1445,7 @@ class StockAnalyzer:
     # --- NEW: MACHINE LEARNING MODULE 1 (PRICE PREDICTION - XGBOOST) ---
     def predict_machine_learning(self):
         try:
+            # ML Uses FULL 5-YEAR Data (self.df)
             if self.data_len < 100: return {"confidence": 0.0, "prediction": "N/A", "msg": "Insufficient Data for AI"}
             
             ml_df = self.df.copy()
@@ -1051,15 +1455,27 @@ class StockAnalyzer:
                 ml_df[f'{col}_Lag2'] = ml_df[col].shift(2)
 
             # SUGGESTION 2: Target > 2% Gain (Noise Reduction)
+            # Create a class weight to handle imbalance
             ml_df['Target'] = (ml_df['Close'].shift(-5) > (ml_df['Close'] * 1.02)).astype(int)
+            pos_count = ml_df['Target'].sum()
+            neg_count = len(ml_df) - pos_count
+            scale_pos_weight = neg_count / pos_count if pos_count > 0 else 1.0
             
             # Feature Engineering
             ml_df['Dist_EMA200'] = (ml_df['Close'] - ml_df['EMA_200']) / ml_df['EMA_200']
             ml_df['Dist_EMA50'] = (ml_df['Close'] - ml_df['EMA_50']) / ml_df['EMA_50']
             ml_df['Price_Change'] = ml_df['Close'].pct_change()
             
+            # Add RSI Slope for trend context
+            ml_df['RSI_Slope'] = ml_df['RSI'].diff(3)
+            
+            # --- NEW: Hurst Feature ---
+            # Rolling Hurst is slow, so we approximate with simple volatility ratio
+            # Volatility Ratio = StdDev(5) / StdDev(20). If > 1, expanding (trending/volatile).
+            ml_df['Vol_Ratio'] = ml_df['Close'].rolling(5).std() / ml_df['Close'].rolling(20).std()
+
             model_features = ['RSI', 'CMF', 'MFI', 'RVOL', 'Dist_EMA50', 'Dist_EMA200', 'Price_Change',
-                              'RSI_Lag1', 'RSI_Lag2', 'CMF_Lag1', 'CMF_Lag2', 'RVOL_Lag1']
+                              'RSI_Lag1', 'RSI_Lag2', 'CMF_Lag1', 'CMF_Lag2', 'RVOL_Lag1', 'RSI_Slope', 'Vol_Ratio']
             ml_df = ml_df.dropna()
             
             if len(ml_df) < 50: return {"confidence": 0.0, "prediction": "N/A", "msg": "Data clean failed"}
@@ -1068,8 +1484,17 @@ class StockAnalyzer:
             X = ml_df[model_features].iloc[:-5] 
             y = ml_df['Target'].iloc[:-5]
             
-            # XGBoost with Regularization
-            clf = XGBClassifier(n_estimators=50, learning_rate=0.1, max_depth=3, reg_alpha=0.1, reg_lambda=1.0, random_state=42, eval_metric='logloss')
+            # XGBoost with Regularization AND Scale Pos Weight
+            clf = XGBClassifier(
+                n_estimators=100, 
+                learning_rate=0.05, 
+                max_depth=4, 
+                reg_alpha=0.1, 
+                reg_lambda=1.0, 
+                scale_pos_weight=scale_pos_weight, # FIX: Handle Class Imbalance
+                random_state=42, 
+                eval_metric='logloss'
+            )
             clf.fit(X, y)
             
             last_row = ml_df[model_features].iloc[-1:].values
@@ -1089,7 +1514,7 @@ class StockAnalyzer:
             return {
                 "confidence": conf_pct,
                 "prediction": sentiment,
-                "msg": f"XGBoost Forecast (Strict Mode > 70%)"
+                "msg": f"XGBoost Forecast (Imbalance Weighted)"
             }
         except Exception as e:
             return {"confidence": 0.0, "prediction": "Error", "msg": str(e)}
@@ -1097,12 +1522,20 @@ class StockAnalyzer:
     # --- NEW: MACHINE LEARNING MODULE 2 (BANDAR/ACCUMULATION DETECTOR - XGBOOST) ---
     def predict_bandar_accumulation(self):
         try:
+            # ML Uses FULL 5-YEAR Data (self.df)
             if self.data_len < 150: return {"probability": 0, "verdict": "Insufficient Data"}
             
             ml_df = self.df.copy()
             future_high = ml_df['High'].shift(-10).rolling(10).max()
             future_low = ml_df['Low'].shift(-10).rolling(10).min()
+            
+            # Create Target: >5% Gain and <2% Drawdown (Very Rare Event)
             ml_df['Target'] = ((future_high > ml_df['Close'] * 1.05) & (future_low > ml_df['Close'] * 0.98)).astype(int)
+            
+            # Calculate Imbalance Ratio for XGBoost
+            pos_count = ml_df['Target'].sum()
+            neg_count = len(ml_df) - pos_count
+            scale_pos_weight = neg_count / pos_count if pos_count > 0 else 1.0
             
             ml_df['CMF'] = self.calc_cmf(ml_df['High'], ml_df['Low'], ml_df['Close'], ml_df['Volume'], 20)
             ml_df['RVOL'] = ml_df['Volume'] / ml_df['Volume'].rolling(20).mean()
@@ -1110,11 +1543,18 @@ class StockAnalyzer:
             ml_df['VWAP_Ratio'] = ml_df['Close'] / ml_df['VWAP']
             ml_df['Body_Size'] = (abs(ml_df['Close'] - ml_df['Open']) / (ml_df['High'] - ml_df['Low'])).fillna(0)
             
+            # --- NEW FEATURE: Buying Pressure (CLV) ---
+            range_len = ml_df['High'] - ml_df['Low']
+            range_len = range_len.replace(0, 0.00001)
+            clv = ((ml_df['Close'] - ml_df['Low']) - (ml_df['High'] - ml_df['Close'])) / range_len
+            ml_df['Buy_Pressure'] = ml_df['Volume'] * (clv + 1) / 2
+            ml_df['Buy_Pressure_Ratio'] = ml_df['Buy_Pressure'] / ml_df['Volume']
+
             # Lags for Accumulation
             ml_df['CMF_Lag1'] = ml_df['CMF'].shift(1)
             ml_df['RVOL_Lag1'] = ml_df['RVOL'].shift(1)
 
-            features = ['CMF', 'RVOL', 'NVI_Change', 'VWAP_Ratio', 'Body_Size', 'MFI', 'CMF_Lag1', 'RVOL_Lag1']
+            features = ['CMF', 'RVOL', 'NVI_Change', 'VWAP_Ratio', 'Body_Size', 'MFI', 'CMF_Lag1', 'RVOL_Lag1', 'Buy_Pressure_Ratio']
             ml_df = ml_df.dropna()
             
             if len(ml_df) < 100: return {"probability": 0, "verdict": "Data Error"}
@@ -1122,7 +1562,16 @@ class StockAnalyzer:
             X = ml_df[features].iloc[:-10]
             y = ml_df['Target'].iloc[:-10]
             
-            clf = XGBClassifier(n_estimators=50, learning_rate=0.05, max_depth=3, reg_alpha=0.1, random_state=42, eval_metric='logloss')
+            # Weighted XGBoost to find rare accumulation events
+            clf = XGBClassifier(
+                n_estimators=100, 
+                learning_rate=0.05, 
+                max_depth=4, 
+                reg_alpha=0.1, 
+                scale_pos_weight=scale_pos_weight, # FIX: Crucial for rare event detection
+                random_state=42, 
+                eval_metric='logloss'
+            )
             clf.fit(X, y)
             
             last_row = ml_df[features].iloc[-1:].values
@@ -1145,29 +1594,33 @@ class StockAnalyzer:
             if self.data_len < 100: return 0
             
             ml_df = self.df.copy()
-            ml_df['Target_Support'] = ml_df['Low'].shift(-5).rolling(window=5).min()
             
-            ml_df['Low_Curr'] = ml_df['Low']
-            ml_df['EMA_50'] = ml_df['EMA_50']
-            ml_df['ATR'] = ml_df['ATR']
+            # FIX: Target is % Distance to Support, NOT raw price
+            # We predict: (Lowest Low in next 5 days - Current Close) / Current Close
+            future_low = ml_df['Low'].shift(-5).rolling(window=5).min()
+            ml_df['Target_Dist'] = (future_low - ml_df['Close']) / ml_df['Close']
+            
+            ml_df['Dist_EMA50'] = (ml_df['Close'] - ml_df['EMA_50']) / ml_df['EMA_50']
+            ml_df['Dist_EMA200'] = (ml_df['Close'] - ml_df['EMA_200']) / ml_df['EMA_200']
+            ml_df['ATR_Pct'] = ml_df['ATR'] / ml_df['Close']
             ml_df['RSI'] = ml_df['RSI']
-            ml_df['Dist_EMA200'] = (ml_df['Close'] - ml_df['EMA_200']) / ml_df['EMA_200'] # Regime Aware Support
             
-            # Lags for Support
-            ml_df['Low_Lag1'] = ml_df['Low'].shift(1)
-
-            features = ['Low_Curr', 'EMA_50', 'ATR', 'RSI', 'Dist_EMA200', 'Low_Lag1']
+            features = ['Dist_EMA50', 'Dist_EMA200', 'ATR_Pct', 'RSI']
             ml_df = ml_df.dropna()
             
             X = ml_df[features].iloc[:-5]
-            y = ml_df['Target_Support'].iloc[:-5]
+            y = ml_df['Target_Dist'].iloc[:-5]
             
             # XGBoost Regressor
-            reg = XGBRegressor(n_estimators=50, max_depth=3, reg_alpha=0.1, random_state=42)
+            reg = XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.05, random_state=42)
             reg.fit(X, y)
             
             last_row = ml_df[features].iloc[-1:].values
-            predicted_support = reg.predict(last_row)[0]
+            pred_dist = reg.predict(last_row)[0]
+            
+            # Convert % distance back to price level
+            current_close = self.df['Close'].iloc[-1]
+            predicted_support = current_close * (1 + pred_dist)
             
             return predicted_support
             
@@ -1218,8 +1671,9 @@ class StockAnalyzer:
             "atr": atr, "smart_money": sm, "weekly_trend": weekly_trend,
             "best_ma": best_ma, # Added dynamic MA
             "inside_bar": inside_bar, # Added inside bar
+            "wyckoff": self.detect_wyckoff_spring(), # --- NEW: Wyckoff Spring
             "vcp": self.detect_vcp_pattern(), 
-            "candle": self.detect_candle_patterns(), 
+            "candle": self.detect_candle_patterns(), # --- UPDATED: Morning Star
             "vsa": self.detect_vsa_anomalies(),
             "low_cheat": self.detect_low_cheat(),
             "squeeze": self.detect_ttm_squeeze(),
@@ -1233,7 +1687,9 @@ class StockAnalyzer:
             "ma_stats": self.backtest_ma_support_all(),
             "ml_prediction": self.predict_machine_learning(), # General Price Prediction
             "bandar_ml": self.predict_bandar_accumulation(), # Bandar ML
-            "ai_support": self.predict_support_level_ml() # --- NEW: Support Prediction
+            "ai_support": self.predict_support_level_ml(), # --- NEW: Support Prediction
+            "hurst": self.calc_hurst(self.df['Close']), # --- NEW: Hurst
+            "rs_score": self.calc_relative_strength_score() # --- NEW: RS Score
         }
 
     def generate_final_report(self):

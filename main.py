@@ -100,6 +100,11 @@ def print_report(data, balance):
     vcp = data['context'].get('vcp', {})
     if vcp.get('detected'):
          print(f"   [VCP DETECTED] {vcp['msg']}")
+
+    # Wyckoff Check
+    wyc = data['context'].get('wyckoff', {})
+    if wyc.get('detected'):
+         print(f"   [WYCKOFF]      {wyc['msg']}")
          
     # Low Cheat Check
     lc = data['context'].get('low_cheat', {})
@@ -110,6 +115,11 @@ def print_report(data, balance):
     ib = data['context'].get('inside_bar', {})
     if ib.get('detected'):
          print(f"   [INSIDE BAR]   {ib['msg']} (High: {ib['high']:.0f}, Low: {ib['low']:.0f})")
+         
+    # Candle Pattern Check
+    cp = data['context'].get('candle', {})
+    if cp.get('pattern') != "None":
+         print(f"   [CANDLE]       {cp['pattern']} ({cp['sentiment']})")
     
     # Support & Resistance Levels
     ctx = data['context']
@@ -119,10 +129,10 @@ def print_report(data, balance):
     if ctx.get('ai_support', 0) > 0:
         print(f"   AI Support: Rp {ctx.get('ai_support', 0):,.0f} (Projected Floor)")
     
-    # Dynamic MA
+    # Dynamic MA - UPDATED
     best_ma = ctx.get('best_ma', {})
-    if best_ma.get('period', 0) > 0:
-        print(f"   Dynamic MA: EMA {best_ma['period']} @ Rp {best_ma['price']:,.0f} ({best_ma['bounces']} bounces)")
+    if best_ma.get('score', 0) > 3 and best_ma.get('win_rate', 0) > 50:
+        print(f"   Dynamic MA: EMA {best_ma['period']} @ Rp {best_ma['price']:,.0f} (Score: {best_ma['score']:.1f}, Win Rate: {best_ma['win_rate']}%)")
         
     # Fib Levels
     fibs = ctx.get('fib_levels', {})
@@ -157,7 +167,7 @@ def print_report(data, balance):
         print(f"\n   --- POSITION SIZING (Bal: {balance/1e6:.0f} Jt) ---")
         if plan.get('lots', 0) > 0:
             print(f"   🛒 BUY:      {plan['lots']} LOTS")
-            print(f"   � Capital:  Rp {plan['lots'] * 100 * plan['entry']:,.0f}")
+            print(f"    Capital:  Rp {plan['lots'] * 100 * plan['entry']:,.0f}")
             print(f"   🔥 Risk:     Rp {plan['risk_amt']:,.0f} ({DEFAULT_CONFIG['RISK_PER_TRADE_PCT']}%)")
         else:
             print("   [!] Stop Loss too tight or risk too high.")
@@ -170,6 +180,16 @@ def print_report(data, balance):
     
     print(f"   Signal Strength: {val['verdict']} (Score: {val['score']})")
     print(f"   Win Probability: {prob['verdict']} (~{prob_val}%)")
+    
+    # --- NEW: QUANT METRICS PRINT ---
+    hurst = data['context'].get('hurst', 0.5)
+    rs_score = data['context'].get('rs_score', 50)
+    
+    h_str = "TRENDING" if hurst > 0.55 else "MEAN REVERTING" if hurst < 0.45 else "RANDOM WALK"
+    rs_str = "OUTPERFORMER" if rs_score > 60 else "LAGGARD" if rs_score < 40 else "NEUTRAL"
+    
+    print(f"   Hurst Exponent:  {hurst:.2f} ({h_str})")
+    print(f"   Relative Strength: {rs_score} ({rs_str})")
     
     status = data['plan']['status']
     
@@ -199,7 +219,10 @@ def main():
     parser.add_argument('--balance', type=int, default=10_000_000, help="Account Balance (IDR)")
     parser.add_argument('--risk', type=float, default=1.0, help="Risk per trade")
     
-    parser.add_argument('--period', default=DEFAULT_CONFIG['BACKTEST_PERIOD'], help="Data period (e.g. 1y, 2y)")
+    # UPDATED ARGUMENTS
+    parser.add_argument('--ml_period', default=DEFAULT_CONFIG['ML_PERIOD'], help="Data period for ML (default 5y)")
+    parser.add_argument('--period', default=DEFAULT_CONFIG['BACKTEST_PERIOD'], help="Data period for Backtest (default 2y)")
+    
     parser.add_argument('--sl', type=float, default=DEFAULT_CONFIG['SL_MULTIPLIER'], help="Stop Loss ATR Multiplier")
     parser.add_argument('--tp', type=float, default=DEFAULT_CONFIG['TP_MULTIPLIER'], help="Take Profit ATR Multiplier")
     parser.add_argument('--fib', type=int, default=DEFAULT_CONFIG['FIB_LOOKBACK_DAYS'], help="Fibonacci Lookback Days")
@@ -217,7 +240,8 @@ def main():
     user_config = {
         "ACCOUNT_BALANCE": args.balance,
         "RISK_PER_TRADE_PCT": args.risk,
-        "BACKTEST_PERIOD": args.period,
+        "ML_PERIOD": args.ml_period,        # New ML Period
+        "BACKTEST_PERIOD": args.period,     # Standard Backtest Period
         "SL_MULTIPLIER": args.sl,
         "TP_MULTIPLIER": args.tp,
         "FIB_LOOKBACK_DAYS": args.fib,
@@ -226,7 +250,8 @@ def main():
         "MIN_DAILY_VOL": args.min_vol
     }
 
-    print(f"\nRunning Mega Analysis on {args.ticker.upper()}... (Config: {user_config})")
+    print(f"\nRunning Mega Analysis on {args.ticker.upper()}...")
+    print(f"Config: ML={args.ml_period}, Backtest={args.period}")
     analyzer = StockAnalyzer(args.ticker, user_config)
     print_report(analyzer.generate_final_report(), args.balance)
 
