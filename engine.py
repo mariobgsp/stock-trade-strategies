@@ -1134,6 +1134,73 @@ class StockAnalyzer:
         
         return best_stoch
 
+    # --- NEW: DYNAMIC RSI OPTIMIZATION ---
+    def find_best_rsi_settings(self):
+        """
+        Iterates through common RSI periods to find the one with the highest predictive power
+        for Oversold reversals (RSI < 30) over the last 1 year.
+        """
+        best_rsi = {"period": 14, "win_rate": 0, "score": 0}
+        
+        # Candidate Settings: 9 (Fast), 14 (Standard), 21 (Smooth), 25 (Trend)
+        candidates = [9, 14, 21, 25]
+        
+        try:
+            hist_len = min(250, self.data_len)
+            start_idx = self.data_len - hist_len
+            
+            close_np = self.df['Close'].values
+            high_np = self.df['High'].values
+            
+            for p in candidates:
+                # 1. Calc RSI manually (Vectorized)
+                delta = pd.Series(close_np).diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=p).mean().values
+                loss = (-delta.where(delta < 0, 0)).rolling(window=p).mean().values
+                
+                # Handle div by zero
+                loss[loss == 0] = 0.00001
+                rs = gain / loss
+                rsi_vals = 100 - (100 / (1 + rs))
+                
+                # 2. Backtest Oversold Reversals (RSI < 30)
+                # Signal: RSI is below 30
+                signals = (rsi_vals < 30)
+                sig_indices = np.where(signals)[0]
+                
+                # Filter indices
+                valid_indices = sig_indices[(sig_indices >= start_idx) & (sig_indices < self.data_len - 5)]
+                
+                if len(valid_indices) < 3: continue
+                
+                wins = 0
+                valid_count = 0
+                
+                # To prevent overcounting (debounce), skip if signal within last 5 days
+                last_sig = -10
+                
+                for idx in valid_indices:
+                    if idx - last_sig < 5: continue
+                    
+                    entry = close_np[idx]
+                    future_high = np.max(high_np[idx+1 : idx+6])
+                    
+                    if future_high > entry * 1.02: # 2% gain target
+                        wins += 1
+                    valid_count += 1
+                    last_sig = idx
+                
+                if valid_count > 0:
+                    wr = (wins / valid_count) * 100
+                    score = wr * np.log(valid_count + 1)
+                    
+                    if score > best_rsi["score"]:
+                        best_rsi = {"period": p, "win_rate": wr, "score": score}
+                        
+        except Exception as e: pass
+        
+        return best_rsi
+
     # --- UPDATED: Fundamentals with Altman Z-Score ---
     def check_fundamentals(self):
         res = {"market_cap": 0, "eps": 0, "pe": 0, "roe": 0, "pbv": 0, "status": "Unknown", "warning": "", "z_score": "N/A"}
@@ -1174,18 +1241,14 @@ class StockAnalyzer:
         res = {"detected": False, "msg": ""}
         try:
             if self.data_len < 20: return res
-            # Use last values only for detection
-            c = self.df['Close']
-            sma20 = c.rolling(20).mean().iloc[-1]
-            std20 = c.rolling(20).std().iloc[-1]
+            sma20 = self.calc_sma(self.df['Close'], 20)
+            std20 = self.calc_std(self.df['Close'], 20)
             upper_bb = sma20 + (2.0 * std20)
             lower_bb = sma20 - (2.0 * std20)
-            
-            atr20 = self.df['ATR'].iloc[-1] # Assuming ATR already calc
+            atr20 = self.calc_atr(self.df['High'], self.df['Low'], self.df['Close'], 20)
             upper_kc = sma20 + (1.5 * atr20)
             lower_kc = sma20 - (1.5 * atr20)
-            
-            is_squeeze = (upper_bb < upper_kc) and (lower_bb > lower_kc)
+            is_squeeze = (upper_bb.iloc[-1] < upper_kc.iloc[-1]) and (lower_bb.iloc[-1] > lower_kc.iloc[-1])
             if is_squeeze: res = {"detected": True, "msg": "TTM Squeeze ON! Massive breakout imminent."}
         except Exception: pass
         return res
@@ -1524,13 +1587,23 @@ class StockAnalyzer:
                 prev_k = self.df['STOCHk'].iloc[-2]
                 curr_d = self.df['STOCHd'].iloc[-1]
             
+            # --- NEW: DYNAMIC RSI INTEGRATION ---
+            best_rsi_settings = ctx.get('best_rsi', {})
+            rsi_pd = best_rsi_settings.get('period', 14)
+            
+            # If not default, calc the dynamic RSI value for signal check
+            if rsi_pd != 14:
+                dyn_rsi = self.calc_rsi(self.df['Close'], rsi_pd)
+                curr_rsi = dyn_rsi.iloc[-1]
+                prev_rsi = dyn_rsi.iloc[-2]
+            
             # Logic: RSI healthy (>50 or rising from >40) AND Stoch crossing up from oversold
             rsi_ok = (curr_rsi > 50) or (curr_rsi > 40 and curr_rsi > prev_rsi)
             stoch_buy = (prev_k < 20) and (curr_k > prev_k) and (curr_k > curr_d)
             
             if rsi_ok and stoch_buy:
                 valid_setups.append({
-                    "reason": f"SNIPER: RSI Trend + Stoch ({k_pd},{d_pd}) Reversal",
+                    "reason": f"SNIPER: RSI({rsi_pd}) Trend + Stoch ({k_pd},{d_pd}) Reversal",
                     "entry": current_price,
                     "sl": current_price - (atr * 2.0),
                     "type": "SNIPER_MOMENTUM"
@@ -1978,7 +2051,8 @@ class StockAnalyzer:
             "hurst": self.calc_hurst(self.df['Close']), # --- NEW: Hurst
             "rs_score": self.calc_relative_strength_score(), # --- NEW: RS Score
             "mc_sim": self.simulate_monte_carlo(self.optimize_stock(1, 60)), # --- NEW: Monte Carlo
-            "best_stoch": self.find_best_stoch_settings() # --- NEW: Dynamic Stoch
+            "best_stoch": self.find_best_stoch_settings(), # --- NEW: Dynamic Stoch
+            "best_rsi": self.find_best_rsi_settings() # --- NEW: Dynamic RSI
         }
 
     def generate_final_report(self):
