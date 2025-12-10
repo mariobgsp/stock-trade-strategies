@@ -35,8 +35,6 @@ DEFAULT_CONFIG = {
 }
 
 MA_TEST_PAIRS = [(5, 20), (20, 50), (50, 200)] 
-STOCH_K_PERIOD = 14
-STOCH_D_PERIOD = 3
 STOCH_OVERSOLD = 20
 OBV_LOOKBACK_DAYS = 10
 TREND_EMA_DEFAULT = 200
@@ -261,7 +259,9 @@ class StockAnalyzer:
         self.active_trend_col = 'EMA_200'
 
         self.df['RSI'] = self.calc_rsi(self.df['Close'], self.config["RSI_PERIOD"])
-        k, d = self.calc_stoch(self.df['High'], self.df['Low'], self.df['Close'], STOCH_K_PERIOD, STOCH_D_PERIOD)
+        
+        # --- NEW: Dynamic Stoch Init (Use default for now, override later) ---
+        k, d = self.calc_stoch(self.df['High'], self.df['Low'], self.df['Close'], 14, 3)
         self.df[f"STOCHk"] = k
         self.df[f"STOCHd"] = d
 
@@ -933,6 +933,86 @@ class StockAnalyzer:
             
         return best_ma
 
+    # --- NEW: DYNAMIC STOCHASTIC OPTIMIZATION ---
+    def find_best_stoch_settings(self):
+        """
+        Iterates through common Stochastic settings to find the one with the highest predictive power
+        for the specific stock over the last 1 year.
+        """
+        best_stoch = {"k": 14, "d": 3, "win_rate": 0, "score": 0}
+        
+        # Candidate Settings: (K Period, D Period)
+        # 14,3 = Standard
+        # 5,3 = Fast/Sensitive
+        # 8,3 = Balanced
+        # 21,5 = Slow/Smooth
+        # 10,5 = Fast but smooth (User request)
+        candidates = [(14, 3), (5, 3), (8, 3), (21, 5), (10, 5)]
+        
+        try:
+            # Limit backtest to last 250 days for speed & relevance
+            hist_len = min(250, self.data_len)
+            start_idx = self.data_len - hist_len
+            
+            close_np = self.df['Close'].values
+            high_np = self.df['High'].values
+            low_np = self.df['Low'].values
+            
+            for k_p, d_p in candidates:
+                # 1. Manual Stoch Calc (Vectorized) to avoid modifying DF repeatedly
+                # Rolling Min/Max
+                low_min = pd.Series(low_np).rolling(window=k_p).min().values
+                high_max = pd.Series(high_np).rolling(window=k_p).max().values
+                
+                # Fast %K
+                # Handle div by zero
+                denom = high_max - low_min
+                denom[denom == 0] = 0.00001
+                stoch_k = 100 * ((close_np - low_min) / denom)
+                
+                # Fast %D (SMA of K)
+                stoch_d = pd.Series(stoch_k).rolling(window=d_p).mean().values
+                
+                # 2. Vectorized Backtest
+                # Signal: K crosses above D while both < 20 (Oversold Buy)
+                # Logic: K[i] > D[i] AND K[i-1] < D[i-1] AND K[i] < 20
+                
+                prev_k = np.roll(stoch_k, 1)
+                prev_d = np.roll(stoch_d, 1)
+                
+                signals = (stoch_k > stoch_d) & (prev_k < prev_d) & (stoch_k < 20)
+                sig_indices = np.where(signals)[0]
+                
+                # Filter indices
+                valid_indices = sig_indices[(sig_indices >= start_idx) & (sig_indices < self.data_len - 5)]
+                
+                if len(valid_indices) < 3: continue
+                
+                wins = 0
+                valid_count = 0
+                
+                for idx in valid_indices:
+                    # Check 5 day forward return
+                    entry = close_np[idx]
+                    # Target: > 2% gain
+                    future_high = np.max(high_np[idx+1 : idx+6])
+                    
+                    if future_high > entry * 1.02:
+                        wins += 1
+                    valid_count += 1
+                
+                if valid_count > 0:
+                    wr = (wins / valid_count) * 100
+                    # Score = Win Rate * Log(Count) to bias towards reliable signals
+                    score = wr * np.log(valid_count + 1)
+                    
+                    if score > best_stoch["score"]:
+                        best_stoch = {"k": k_p, "d": d_p, "win_rate": wr, "score": score}
+                        
+        except Exception as e: pass
+        
+        return best_stoch
+
     # --- UPDATED: Fundamentals with Altman Z-Score ---
     def check_fundamentals(self):
         res = {"market_cap": 0, "eps": 0, "pe": 0, "roe": 0, "pbv": 0, "status": "Unknown", "warning": "", "z_score": "N/A"}
@@ -1304,9 +1384,24 @@ class StockAnalyzer:
         try:
             curr_rsi = self.df['RSI'].iloc[-1]
             prev_rsi = self.df['RSI'].iloc[-2]
-            curr_k = self.df['STOCHk'].iloc[-1]
-            prev_k = self.df['STOCHk'].iloc[-2]
-            curr_d = self.df['STOCHd'].iloc[-1]
+            
+            # --- DYNAMIC STOCH ---
+            best_stoch = ctx.get('best_stoch', {})
+            # Use found settings, or default 14,3
+            k_pd = best_stoch.get('k', 14)
+            d_pd = best_stoch.get('d', 3)
+            
+            # Need to recalculate if not standard 14,3 (which is pre-calc)
+            # For efficiency in decision phase, we re-calc last 2 points
+            if k_pd != 14:
+                k, d = self.calc_stoch(self.df['High'], self.df['Low'], self.df['Close'], k_pd, d_pd)
+                curr_k = k.iloc[-1]
+                prev_k = k.iloc[-2]
+                curr_d = d.iloc[-1]
+            else:
+                curr_k = self.df['STOCHk'].iloc[-1]
+                prev_k = self.df['STOCHk'].iloc[-2]
+                curr_d = self.df['STOCHd'].iloc[-1]
             
             # Logic: RSI healthy (>50 or rising from >40) AND Stoch crossing up from oversold
             rsi_ok = (curr_rsi > 50) or (curr_rsi > 40 and curr_rsi > prev_rsi)
@@ -1314,7 +1409,7 @@ class StockAnalyzer:
             
             if rsi_ok and stoch_buy:
                 valid_setups.append({
-                    "reason": "SNIPER: RSI Trend + Stoch Reversal",
+                    "reason": f"SNIPER: RSI Trend + Stoch ({k_pd},{d_pd}) Reversal",
                     "entry": current_price,
                     "sl": current_price - (atr * 2.0),
                     "type": "SNIPER_MOMENTUM"
@@ -1756,7 +1851,8 @@ class StockAnalyzer:
             "ai_support": self.predict_support_level_ml(), # --- NEW: Support Prediction
             "hurst": self.calc_hurst(self.df['Close']), # --- NEW: Hurst
             "rs_score": self.calc_relative_strength_score(), # --- NEW: RS Score
-            "mc_sim": self.simulate_monte_carlo(self.optimize_stock(1, 60)) # --- NEW: Monte Carlo
+            "mc_sim": self.simulate_monte_carlo(self.optimize_stock(1, 60)), # --- NEW: Monte Carlo
+            "best_stoch": self.find_best_stoch_settings() # --- NEW: Dynamic Stoch
         }
 
     def generate_final_report(self):
