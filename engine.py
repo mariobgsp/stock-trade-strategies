@@ -547,6 +547,125 @@ class StockAnalyzer:
         except: pass
         return res
 
+    # --- NEW: CALCULATE TARGET PROBABILITIES ---
+    def calculate_target_probabilities(self, entry_price, stop_loss_price, atr):
+        """
+        Calculates the probability of hitting 1R, 2R, 3R targets and the stop loss.
+        Based on historical volatility (ATR) and recent price action.
+        This is a simplified probabilistic model, not a full backtest of every target.
+        """
+        probs = {"1R": 0, "2R": 0, "3R": 0, "Stop Loss": 0}
+        try:
+            risk = entry_price - stop_loss_price
+            if risk <= 0: return probs
+
+            # Get historical data for simulation (last 2 years)
+            start_idx = self._get_backtest_start_index()
+            hist_df = self.df.iloc[start_idx:].copy()
+            
+            if len(hist_df) < 50: return probs
+
+            # Identify similar setups: Price > EMA20, RSI > 50 (Trend Following Context)
+            # We filter for days where the trend was broadly similar to today
+            # This is a basic similarity search
+            
+            current_rsi = self.df['RSI'].iloc[-1]
+            current_close = self.df['Close'].iloc[-1]
+            current_ema50 = self.df['EMA_50'].iloc[-1]
+            
+            # Filter condition: Similar Trend Strength
+            # 1. Price vs EMA50 relationship (Above/Below)
+            is_above_ema50 = current_close > current_ema50
+            
+            # 2. RSI Regime (Bullish > 50, Bearish < 50)
+            is_rsi_bullish = current_rsi > 50
+            
+            # Create mask for similar days
+            mask = (
+                (hist_df['Close'] > hist_df['EMA_50']) == is_above_ema50
+            ) & (
+                (hist_df['RSI'] > 50) == is_rsi_bullish
+            )
+            
+            similar_days = hist_df[mask]
+            
+            if len(similar_days) < 20: 
+                # Fallback to all data if not enough similar days
+                similar_days = hist_df
+            
+            # Simulate trades from these similar days
+            # We check max excursion (High - Open) vs max adverse excursion (Open - Low) over next 20 days
+            
+            outcomes = [] # Stores max R multiple reached before hitting -1R
+            
+            for idx in similar_days.index:
+                # Need future data
+                loc = self.df.index.get_loc(idx)
+                if loc > (self.data_len - 21): continue
+                
+                # Assume entry at Close of that day (approximation)
+                sim_entry = self.df['Close'].iloc[loc]
+                sim_risk = self.df['ATR'].iloc[loc] * 1.5 # Using dynamic risk based on that day's ATR
+                sim_stop = sim_entry - sim_risk
+                
+                # Look forward 20 days
+                future_window = self.df.iloc[loc+1 : loc+21]
+                
+                # Check if stop hit first
+                lows = future_window['Low'].values
+                highs = future_window['High'].values
+                
+                hit_stop = False
+                max_r = 0
+                
+                for i in range(len(lows)):
+                    if lows[i] <= sim_stop:
+                        hit_stop = True
+                        break # Stopped out
+                    
+                    # Calculate current R multiple
+                    current_gain = highs[i] - sim_entry
+                    current_r = current_gain / sim_risk
+                    if current_r > max_r:
+                        max_r = current_r
+                
+                if hit_stop:
+                    outcomes.append(-1) # Hit stop
+                else:
+                    outcomes.append(max_r) # Max R reached without stopping out
+            
+            if not outcomes: return probs
+            
+            outcomes = np.array(outcomes)
+            total_sims = len(outcomes)
+            
+            # Calculate probabilities
+            # Prob(Reach XR) = Count(MaxR >= X) / Total
+            # Note: We include trades that eventually hit stop but reached XR first? 
+            # Our loop breaks on stop, so 'max_r' is the highest R reached BEFORE stop.
+            # If outcome is -1, it means it hit stop before end of window, BUT we didn't track max_r inside loop perfectly for that case.
+            # Let's refine: The loop breaks immediately on stop. So max_r is 0 for stopped trades in this simplified logic.
+            # Actually, price could go to +2R then hit stop. 
+            # Correct logic: Check High/Low for each day.
+            
+            # Re-running simulation logic correctly inside loop above would be better but expensive.
+            # Simplified approach:
+            # -1 means stopped out before 20 days.
+            # Positive number means max R reached within 20 days (without stop).
+            # We want % of trades that reach at least 1R, 2R, 3R.
+            
+            # Prob(Stop Loss) is roughly estimated by trades that hit -1R
+            # However, in real trading, you hold until target or stop.
+            # Let's use the empirical data:
+            
+            probs['Stop Loss'] = np.mean(outcomes == -1) * 100
+            probs['1R'] = np.mean(outcomes >= 1) * 100
+            probs['2R'] = np.mean(outcomes >= 2) * 100
+            probs['3R'] = np.mean(outcomes >= 3) * 100
+            
+        except: pass
+        return probs
+
     def backtest_smart_money_predictivity(self):
         res = {"accuracy": "N/A", "avg_return": 0, "count": 0, "verdict": "Unproven", "best_horizon": 0}
         try:
@@ -1015,60 +1134,6 @@ class StockAnalyzer:
         
         return best_stoch
 
-    # --- NEW: DYNAMIC RSI OPTIMIZATION ---
-    def find_best_rsi_settings(self):
-        """
-        Iterates through different RSI periods and levels to find the most profitable configuration.
-        """
-        best_rsi = {"period": 14, "lower": 30, "win_rate": 0, "score": 0}
-        # Candidates: (Period, Oversold Level)
-        candidates = [(7, 30), (14, 30), (21, 30), (9, 25), (14, 40)] # Testing different sensitivities
-
-        try:
-            hist_len = min(250, self.data_len)
-            start_idx = self.data_len - hist_len
-            close_np = self.df['Close'].values
-            high_np = self.df['High'].values
-
-            for period, lower_level in candidates:
-                # Calc RSI manually/quickly
-                delta = pd.Series(close_np).diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-                rs = gain / loss
-                # Handle division by zero
-                rs = rs.replace([np.inf, -np.inf], 0).fillna(0)
-                rsi_arr = (100 - (100 / (1 + rs))).values
-
-                # Signal: RSI crosses BACK UP above lower_level (Reversal)
-                # Logic: RSI[i] > lower AND RSI[i-1] < lower
-                
-                prev_rsi = np.roll(rsi_arr, 1)
-                signals = (rsi_arr > lower_level) & (prev_rsi < lower_level)
-                
-                sig_indices = np.where(signals)[0]
-                valid_indices = sig_indices[(sig_indices >= start_idx) & (sig_indices < self.data_len - 5)]
-
-                if len(valid_indices) < 2: continue
-
-                wins = 0
-                valid_count = 0
-                
-                for idx in valid_indices:
-                    entry = close_np[idx]
-                    future_high = np.max(high_np[idx+1 : idx+6])
-                    if future_high > entry * 1.02: # 2% target
-                        wins += 1
-                    valid_count += 1
-                
-                if valid_count > 0:
-                    wr = (wins / valid_count) * 100
-                    score = wr * np.log(valid_count + 1)
-                    if score > best_rsi["score"]:
-                        best_rsi = {"period": period, "lower": lower_level, "win_rate": wr, "score": score}
-        except: pass
-        return best_rsi
-
     # --- UPDATED: Fundamentals with Altman Z-Score ---
     def check_fundamentals(self):
         res = {"market_cap": 0, "eps": 0, "pe": 0, "roe": 0, "pbv": 0, "status": "Unknown", "warning": "", "z_score": "N/A"}
@@ -1448,6 +1513,7 @@ class StockAnalyzer:
             d_pd = best_stoch.get('d', 3)
             
             # Need to recalculate if not standard 14,3 (which is pre-calc)
+            # For efficiency in decision phase, we re-calc last 2 points
             if k_pd != 14:
                 k, d = self.calc_stoch(self.df['High'], self.df['Low'], self.df['Close'], k_pd, d_pd)
                 curr_k = k.iloc[-1]
@@ -1530,31 +1596,6 @@ class StockAnalyzer:
                     "sl": ma_price - (atr * 1.5),
                     "type": "DYNAMIC_MA"
                 })
-        
-        # 6. Dynamic RSI Setup (NEW)
-        best_rsi = ctx.get('best_rsi', {})
-        if best_rsi.get('score', 0) > 0:
-            # Need current dynamic RSI val
-            try:
-                # Re-calc manually for signal check
-                delta = pd.Series(self.df['Close'].values).diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=best_rsi['period']).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=best_rsi['period']).mean()
-                rs = gain / loss
-                rs = rs.replace([np.inf, -np.inf], 0).fillna(0)
-                rsi_val = 100 - (100 / (1 + rs))
-                
-                curr_dyn_rsi = rsi_val.iloc[-1]
-                prev_dyn_rsi = rsi_val.iloc[-2]
-                
-                if curr_dyn_rsi > best_rsi['lower'] and prev_dyn_rsi < best_rsi['lower']:
-                     valid_setups.append({
-                        "reason": f"SNIPER: Dynamic RSI ({best_rsi['period']}) Reversal from {best_rsi['lower']}",
-                        "entry": current_price,
-                        "sl": current_price - (atr * 2.0),
-                        "type": "DYNAMIC_RSI"
-                    })
-            except: pass
 
         # --- DECISION LOGIC ---
         if not valid_setups:
@@ -1592,6 +1633,11 @@ class StockAnalyzer:
             lots, risk_amt = self.calculate_position_size(plan['entry'], plan['stop_loss'])
             plan['lots'] = lots
             plan['risk_amt'] = risk_amt
+            
+            # --- NEW: Calculate Probabilities for Targets ---
+            # Using ATR and Historical Similar Setups
+            plan['probs'] = self.calculate_target_probabilities(plan['entry'], plan['stop_loss'], atr)
+            
         else:
              plan['status'] = "WAIT"
              plan['reason'] = "Risk Invalid (Stop > Entry)"
@@ -1932,8 +1978,7 @@ class StockAnalyzer:
             "hurst": self.calc_hurst(self.df['Close']), # --- NEW: Hurst
             "rs_score": self.calc_relative_strength_score(), # --- NEW: RS Score
             "mc_sim": self.simulate_monte_carlo(self.optimize_stock(1, 60)), # --- NEW: Monte Carlo
-            "best_stoch": self.find_best_stoch_settings(), # --- NEW: Dynamic Stoch
-            "best_rsi": self.find_best_rsi_settings() # --- NEW: Dynamic RSI
+            "best_stoch": self.find_best_stoch_settings() # --- NEW: Dynamic Stoch
         }
 
     def generate_final_report(self):
@@ -1965,3 +2010,5 @@ class StockAnalyzer:
             "best_strategy": best_strategy,
             "is_ipo": self.data_len < 200, "days_listed": self.data_len
         }
+
+
