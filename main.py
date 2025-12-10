@@ -133,6 +133,11 @@ def print_report(data, balance):
     best_stoch = ctx.get('best_stoch', {})
     if best_stoch.get('score', 0) > 0:
         print(f"   Dynamic Stoch: ({best_stoch['k']}, {best_stoch['d']}) - Best Fit (Win Rate: {best_stoch['win_rate']:.1f}%)")
+    
+    # Dynamic RSI - NEW
+    best_rsi = ctx.get('best_rsi', {})
+    if best_rsi.get('score', 0) > 0:
+        print(f"   Dynamic RSI:   Period {best_rsi['period']} - Best Fit (Win Rate: {best_rsi['win_rate']:.1f}%)")
         
     # Fib Levels
     fibs = ctx.get('fib_levels', {})
