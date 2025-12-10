@@ -550,11 +550,11 @@ class StockAnalyzer:
     # --- NEW: CALCULATE TARGET PROBABILITIES ---
     def calculate_target_probabilities(self, entry_price, stop_loss_price, atr):
         """
-        Calculates the probability of hitting 1R, 2R, 3R targets and the stop loss.
+        Calculates the probability of hitting 1R, 2R, 3R, 4R, 5R targets and the stop loss.
         Based on historical volatility (ATR) and recent price action.
         This is a simplified probabilistic model, not a full backtest of every target.
         """
-        probs = {"1R": 0, "2R": 0, "3R": 0, "Stop Loss": 0}
+        probs = {"1R": 0, "2R": 0, "3R": 0, "4R": 0, "5R": 0, "Stop Loss": 0}
         try:
             risk = entry_price - stop_loss_price
             if risk <= 0: return probs
@@ -594,22 +594,22 @@ class StockAnalyzer:
                 similar_days = hist_df
             
             # Simulate trades from these similar days
-            # We check max excursion (High - Open) vs max adverse excursion (Open - Low) over next 20 days
+            # We check max excursion (High - Open) vs max adverse excursion (Open - Low) over next 40 days
             
             outcomes = [] # Stores max R multiple reached before hitting -1R
             
             for idx in similar_days.index:
                 # Need future data
                 loc = self.df.index.get_loc(idx)
-                if loc > (self.data_len - 21): continue
+                if loc > (self.data_len - 41): continue
                 
                 # Assume entry at Close of that day (approximation)
                 sim_entry = self.df['Close'].iloc[loc]
                 sim_risk = self.df['ATR'].iloc[loc] * 1.5 # Using dynamic risk based on that day's ATR
                 sim_stop = sim_entry - sim_risk
                 
-                # Look forward 20 days
-                future_window = self.df.iloc[loc+1 : loc+21]
+                # Look forward 40 days to allow for larger moves
+                future_window = self.df.iloc[loc+1 : loc+41]
                 
                 # Check if stop hit first
                 lows = future_window['Low'].values
@@ -640,20 +640,6 @@ class StockAnalyzer:
             total_sims = len(outcomes)
             
             # Calculate probabilities
-            # Prob(Reach XR) = Count(MaxR >= X) / Total
-            # Note: We include trades that eventually hit stop but reached XR first? 
-            # Our loop breaks on stop, so 'max_r' is the highest R reached BEFORE stop.
-            # If outcome is -1, it means it hit stop before end of window, BUT we didn't track max_r inside loop perfectly for that case.
-            # Let's refine: The loop breaks immediately on stop. So max_r is 0 for stopped trades in this simplified logic.
-            # Actually, price could go to +2R then hit stop. 
-            # Correct logic: Check High/Low for each day.
-            
-            # Re-running simulation logic correctly inside loop above would be better but expensive.
-            # Simplified approach:
-            # -1 means stopped out before 20 days.
-            # Positive number means max R reached within 20 days (without stop).
-            # We want % of trades that reach at least 1R, 2R, 3R.
-            
             # Prob(Stop Loss) is roughly estimated by trades that hit -1R
             # However, in real trading, you hold until target or stop.
             # Let's use the empirical data:
@@ -662,6 +648,8 @@ class StockAnalyzer:
             probs['1R'] = np.mean(outcomes >= 1) * 100
             probs['2R'] = np.mean(outcomes >= 2) * 100
             probs['3R'] = np.mean(outcomes >= 3) * 100
+            probs['4R'] = np.mean(outcomes >= 4) * 100
+            probs['5R'] = np.mean(outcomes >= 5) * 100
             
         except: pass
         return probs
@@ -1241,14 +1229,18 @@ class StockAnalyzer:
         res = {"detected": False, "msg": ""}
         try:
             if self.data_len < 20: return res
-            sma20 = self.calc_sma(self.df['Close'], 20)
-            std20 = self.calc_std(self.df['Close'], 20)
+            # Use last values only for detection
+            c = self.df['Close']
+            sma20 = c.rolling(20).mean().iloc[-1]
+            std20 = c.rolling(20).std().iloc[-1]
             upper_bb = sma20 + (2.0 * std20)
             lower_bb = sma20 - (2.0 * std20)
-            atr20 = self.calc_atr(self.df['High'], self.df['Low'], self.df['Close'], 20)
+            
+            atr20 = self.df['ATR'].iloc[-1] # Assuming ATR already calc
             upper_kc = sma20 + (1.5 * atr20)
             lower_kc = sma20 - (1.5 * atr20)
-            is_squeeze = (upper_bb.iloc[-1] < upper_kc.iloc[-1]) and (lower_bb.iloc[-1] > lower_kc.iloc[-1])
+            
+            is_squeeze = (upper_bb < upper_kc) and (lower_bb > lower_kc)
             if is_squeeze: res = {"detected": True, "msg": "TTM Squeeze ON! Massive breakout imminent."}
         except Exception: pass
         return res
