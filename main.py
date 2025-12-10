@@ -100,11 +100,6 @@ def print_report(data, balance):
     vcp = data['context'].get('vcp', {})
     if vcp.get('detected'):
          print(f"   [VCP DETECTED] {vcp['msg']}")
-
-    # Wyckoff Check
-    wyc = data['context'].get('wyckoff', {})
-    if wyc.get('detected'):
-         print(f"   [WYCKOFF]      {wyc['msg']}")
          
     # Low Cheat Check
     lc = data['context'].get('low_cheat', {})
@@ -138,6 +133,11 @@ def print_report(data, balance):
     best_stoch = ctx.get('best_stoch', {})
     if best_stoch.get('score', 0) > 0:
         print(f"   Dynamic Stoch: ({best_stoch['k']}, {best_stoch['d']}) - Best Fit (Win Rate: {best_stoch['win_rate']:.1f}%)")
+    
+    # Dynamic RSI - NEW
+    best_rsi = ctx.get('best_rsi', {})
+    if best_rsi.get('score', 0) > 0:
+        print(f"   Dynamic RSI: ({best_rsi['period']}) - Best Fit (Win Rate: {best_rsi['win_rate']:.1f}%)")
         
     # Fib Levels
     fibs = ctx.get('fib_levels', {})
@@ -270,5 +270,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
