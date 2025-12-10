@@ -191,6 +191,14 @@ def print_report(data, balance):
     print(f"   Hurst Exponent:  {hurst:.2f} ({h_str})")
     print(f"   Relative Strength: {rs_score} ({rs_str})")
     
+    # --- NEW: MONTE CARLO PRINT ---
+    mc = data['context'].get('mc_sim', {})
+    if mc.get('risk_of_ruin') is not None:
+        print(f"\n🎲 MONTE CARLO (1000 Simulations / 1 Yr)")
+        print(f"   Risk of Ruin:    {mc['risk_of_ruin']:.1f}% (>50% Drawdown)")
+        print(f"   Median Return:   {mc['median_return']:.1f}%")
+        print(f"   Worst Case (5%): {mc['worst_case']:.1f}%")
+    
     status = data['plan']['status']
     
     # --- SMART LOGIC UPDATE ---
