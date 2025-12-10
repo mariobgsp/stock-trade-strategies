@@ -401,8 +401,12 @@ class StockAnalyzer:
             return max(0, self.data_len - 500)
 
     def optimize_stock(self, days_min, days_max):
-        """Vectorized Optimization"""
-        best_res = {"strategy": None, "win_rate": -1, "details": "N/A", "hold_days": 0, "is_triggered_today": False}
+        """Vectorized Optimization with Return Stats"""
+        best_res = {
+            "strategy": None, "win_rate": -1, "details": "N/A", 
+            "hold_days": 0, "is_triggered_today": False,
+            "avg_win": 0, "avg_loss": 0
+        }
         
         start_idx = self._get_backtest_start_index()
         close_np = self.df['Close'].values
@@ -412,6 +416,7 @@ class StockAnalyzer:
         def fast_sim(signal_indices_np):
             best_wr = -1
             best_d = 0
+            stats = {"avg_win": 0, "avg_loss": 0}
             
             # Loop hold days (scalar loop is fast if inner ops are vectorized)
             for d in range(days_min, days_max + 1):
@@ -428,15 +433,23 @@ class StockAnalyzer:
                 
                 # vectorized return calc
                 returns = (exit_prices - entry_prices) / entry_prices
-                wins = np.sum(returns > 0)
+                wins = returns > 0
+                win_count = np.sum(wins)
                 count = len(returns)
                 
                 if count > 0:
-                    wr = (wins / count) * 100
+                    wr = (win_count / count) * 100
                     if wr > best_wr:
                         best_wr = wr
                         best_d = d
-            return best_wr, best_d
+                        # Calc average returns
+                        win_rets = returns[wins]
+                        loss_rets = returns[~wins]
+                        
+                        stats["avg_win"] = np.mean(win_rets) if len(win_rets) > 0 else 0
+                        stats["avg_loss"] = np.mean(loss_rets) if len(loss_rets) > 0 else 0
+                        
+            return best_wr, best_d, stats
 
         # 1. RSI Strategy
         if 'RSI' in self.df.columns:
@@ -448,14 +461,16 @@ class StockAnalyzer:
                 sig_idxs = sig_idxs[sig_idxs >= start_idx] # Filter for backtest period
                 
                 if len(sig_idxs) > 0:
-                    wr, h_days = fast_sim(sig_idxs)
+                    wr, h_days, stats = fast_sim(sig_idxs)
                     if wr > best_res['win_rate']:
                         best_res = {
                             "strategy": "RSI Reversal", 
                             "details": f"RSI < {level}", 
                             "win_rate": wr, 
                             "hold_days": h_days, 
-                            "is_triggered_today": self.df['RSI'].iloc[-1] < level
+                            "is_triggered_today": self.df['RSI'].iloc[-1] < level,
+                            "avg_win": stats['avg_win'],
+                            "avg_loss": stats['avg_loss']
                         }
 
         # 2. MA Trend Strategy
@@ -467,17 +482,68 @@ class StockAnalyzer:
             sig_idxs = sig_idxs[sig_idxs >= start_idx]
             
             if len(sig_idxs) > 0:
-                wr, h_days = fast_sim(sig_idxs)
+                wr, h_days, stats = fast_sim(sig_idxs)
                 if wr > best_res['win_rate']:
                     best_res = {
                         "strategy": "MA Trend", 
                         "details": "Trend Following (50 > 200)", 
                         "win_rate": wr, 
                         "hold_days": h_days, 
-                        "is_triggered_today": (ema50[-1] > ema200[-1])
+                        "is_triggered_today": (ema50[-1] > ema200[-1]),
+                        "avg_win": stats['avg_win'],
+                        "avg_loss": stats['avg_loss']
                     }
                     
         return best_res
+
+    # --- NEW: MONTE CARLO SIMULATION ---
+    def simulate_monte_carlo(self, best_strategy):
+        """
+        Runs a Monte Carlo simulation based on the backtested win rate and avg returns.
+        Simulates 1000 equity curves for a 1-year period (approx 50 trades).
+        """
+        res = {"risk_of_ruin": 0, "median_return": 0, "worst_case": 0}
+        try:
+            win_rate = best_strategy.get('win_rate', 0) / 100.0
+            avg_win = best_strategy.get('avg_win', 0)
+            avg_loss = best_strategy.get('avg_loss', 0)
+            
+            if win_rate <= 0 or avg_win <= 0: return res
+            
+            # Simulation Parameters
+            num_sims = 1000
+            num_trades = 50 # Approx trades per year
+            start_equity = 1.0 # Normalized
+            
+            # Pre-generate random outcomes (1 = win, 0 = loss)
+            # shape: (1000, 50)
+            outcomes = np.random.choice([1, 0], size=(num_sims, num_trades), p=[win_rate, 1-win_rate])
+            
+            # Map outcomes to returns
+            # If 1, return is avg_win. If 0, return is avg_loss.
+            returns = np.where(outcomes == 1, avg_win, avg_loss)
+            
+            # Calculate Equity Curves (Compound)
+            # equity = start * (1 + r1) * (1 + r2) ...
+            equity_curves = np.cumprod(1 + returns, axis=1)
+            final_equities = equity_curves[:, -1]
+            
+            # Metrics
+            median_eq = np.median(final_equities)
+            res['median_return'] = (median_eq - 1) * 100
+            
+            # Worst Case (5th percentile - VaR 95)
+            worst_eq = np.percentile(final_equities, 5)
+            res['worst_case'] = (worst_eq - 1) * 100
+            
+            # Risk of Ruin (Drawdown > 50% at any point)
+            # Check min equity along the path
+            min_equities = np.min(equity_curves, axis=1)
+            ruin_count = np.sum(min_equities < 0.5) # Ruin defined as 50% loss
+            res['risk_of_ruin'] = (ruin_count / num_sims) * 100
+            
+        except: pass
+        return res
 
     def backtest_smart_money_predictivity(self):
         res = {"accuracy": "N/A", "avg_return": 0, "count": 0, "verdict": "Unproven", "best_horizon": 0}
@@ -1689,7 +1755,8 @@ class StockAnalyzer:
             "bandar_ml": self.predict_bandar_accumulation(), # Bandar ML
             "ai_support": self.predict_support_level_ml(), # --- NEW: Support Prediction
             "hurst": self.calc_hurst(self.df['Close']), # --- NEW: Hurst
-            "rs_score": self.calc_relative_strength_score() # --- NEW: RS Score
+            "rs_score": self.calc_relative_strength_score(), # --- NEW: RS Score
+            "mc_sim": self.simulate_monte_carlo(self.optimize_stock(1, 60)) # --- NEW: Monte Carlo
         }
 
     def generate_final_report(self):
