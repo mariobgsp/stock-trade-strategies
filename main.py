@@ -133,6 +133,11 @@ def print_report(data, balance):
     best_ma = ctx.get('best_ma', {})
     if best_ma.get('score', 0) > 3 and best_ma.get('win_rate', 0) > 50:
         print(f"   Dynamic MA: EMA {best_ma['period']} @ Rp {best_ma['price']:,.0f} (Score: {best_ma['score']:.1f}, Win Rate: {best_ma['win_rate']}%)")
+    
+    # Dynamic Stoch - NEW
+    best_stoch = ctx.get('best_stoch', {})
+    if best_stoch.get('score', 0) > 0:
+        print(f"   Dynamic Stoch: ({best_stoch['k']}, {best_stoch['d']}) - Best Fit (Win Rate: {best_stoch['win_rate']:.1f}%)")
         
     # Fib Levels
     fibs = ctx.get('fib_levels', {})
