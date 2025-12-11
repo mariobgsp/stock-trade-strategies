@@ -8,15 +8,14 @@ from bs4 import BeautifulSoup
 from textblob import TextBlob
 from datetime import datetime, timedelta
 # --- XGBoost Imports ---
-from xgboost import XGBClassifier, XGBRegressor
+from xgboost import XGBRegressor # Keep Regressor for Support Level
 from sklearn.model_selection import train_test_split
 
 # ==========================================
 # 1. DEFAULT CONFIGURATION
 # ==========================================
 DEFAULT_CONFIG = {
-    "ML_PERIOD": "5y",          # Long history for AI/ML training
-    "BACKTEST_PERIOD": "2y",    # Recent history for strategy validation
+    "BACKTEST_PERIOD": "3y",
     "MAX_HOLD_DAYS": 60,
     "FIB_LOOKBACK_DAYS": 120,
     "RSI_PERIOD": 14,
@@ -79,7 +78,7 @@ class StockAnalyzer:
     def fetch_data(self):
         try:
             # FETCH 5 YEARS (ML_PERIOD) for ML context
-            period = self.config["ML_PERIOD"]
+            period = "5y" 
             self.df = yf.download(self.ticker, period=period, progress=False, auto_adjust=True, multi_level_index=False)
             try:
                 self.market_df = yf.download(self.market_ticker, period=period, progress=False, auto_adjust=True, multi_level_index=False)
@@ -1422,7 +1421,7 @@ class StockAnalyzer:
         return False
 
     def analyze_smart_money_enhanced(self):
-        res = {"status": "NEUTRAL", "signals": [], "metrics": {}}
+        res = {"status": "NEUTRAL", "signals": [], "metrics": {}, "accum_days": 0}
         try:
             c0 = self.df.iloc[-1]
             score = 0
@@ -1456,6 +1455,16 @@ class StockAnalyzer:
             
             buy_pressure = (total_buy_vol / total_vol) * 100 if total_vol > 0 else 50
             
+            # --- UPDATED: Accumulation Days Calculation ---
+            # Count consecutive days where Buy Vol > Sell Vol up to the current day
+            consecutive_accum = 0
+            for i in range(len(recent)-1, -1, -1):
+                if recent['Buy_Vol'].iloc[i] > recent['Sell_Vol'].iloc[i]:
+                    consecutive_accum += 1
+                else:
+                    break
+            res['accum_days'] = consecutive_accum
+
             # --- END UPGRADE ---
 
             # Old naive spike detection remains useful for "Aggression"
@@ -1796,149 +1805,13 @@ class StockAnalyzer:
     
     # --- NEW: MACHINE LEARNING MODULE 1 (PRICE PREDICTION - XGBOOST) ---
     def predict_machine_learning(self):
-        try:
-            # ML Uses FULL 5-YEAR Data (self.df)
-            if self.data_len < 100: return {"confidence": 0.0, "prediction": "N/A", "msg": "Insufficient Data for AI"}
-            
-            ml_df = self.df.copy()
-            # SUGGESTION 5: Lag Features (Sequence Awareness)
-            for col in ['RSI', 'CMF', 'RVOL']:
-                ml_df[f'{col}_Lag1'] = ml_df[col].shift(1)
-                ml_df[f'{col}_Lag2'] = ml_df[col].shift(2)
-
-            # SUGGESTION 2: Target > 2% Gain (Noise Reduction)
-            # Create a class weight to handle imbalance
-            ml_df['Target'] = (ml_df['Close'].shift(-5) > (ml_df['Close'] * 1.02)).astype(int)
-            pos_count = ml_df['Target'].sum()
-            neg_count = len(ml_df) - pos_count
-            scale_pos_weight = neg_count / pos_count if pos_count > 0 else 1.0
-            
-            # Feature Engineering
-            ml_df['Dist_EMA200'] = (ml_df['Close'] - ml_df['EMA_200']) / ml_df['EMA_200']
-            ml_df['Dist_EMA50'] = (ml_df['Close'] - ml_df['EMA_50']) / ml_df['EMA_50']
-            ml_df['Price_Change'] = ml_df['Close'].pct_change()
-            
-            # Add RSI Slope for trend context
-            ml_df['RSI_Slope'] = ml_df['RSI'].diff(3)
-            
-            # --- NEW: Hurst Feature ---
-            # Rolling Hurst is slow, so we approximate with simple volatility ratio
-            # Volatility Ratio = StdDev(5) / StdDev(20). If > 1, expanding (trending/volatile).
-            ml_df['Vol_Ratio'] = ml_df['Close'].rolling(5).std() / ml_df['Close'].rolling(20).std()
-
-            model_features = ['RSI', 'CMF', 'MFI', 'RVOL', 'Dist_EMA50', 'Dist_EMA200', 'Price_Change',
-                              'RSI_Lag1', 'RSI_Lag2', 'CMF_Lag1', 'CMF_Lag2', 'RVOL_Lag1', 'RSI_Slope', 'Vol_Ratio']
-            ml_df = ml_df.dropna()
-            
-            if len(ml_df) < 50: return {"confidence": 0.0, "prediction": "N/A", "msg": "Data clean failed"}
-
-            # SUGGESTION 4 (Spirit of Walk-Forward): Standard Fit on temporal data (no shuffle)
-            X = ml_df[model_features].iloc[:-5] 
-            y = ml_df['Target'].iloc[:-5]
-            
-            # XGBoost with Regularization AND Scale Pos Weight
-            clf = XGBClassifier(
-                n_estimators=100, 
-                learning_rate=0.05, 
-                max_depth=4, 
-                reg_alpha=0.1, 
-                reg_lambda=1.0, 
-                scale_pos_weight=scale_pos_weight, # FIX: Handle Class Imbalance
-                random_state=42, 
-                eval_metric='logloss'
-            )
-            clf.fit(X, y)
-            
-            last_row = ml_df[model_features].iloc[-1:].values
-            prediction = clf.predict(last_row)[0]
-            probability = clf.predict_proba(last_row)[0][1] 
-            
-            conf_pct = probability * 100
-            
-            # SUGGESTION 1: High Threshold (>70%)
-            if conf_pct > 70: 
-                sentiment = "BULLISH (High Conviction)"
-            elif conf_pct < 30:
-                sentiment = "BEARISH"
-            else:
-                sentiment = "NEUTRAL / NOISE"
-            
-            return {
-                "confidence": conf_pct,
-                "prediction": sentiment,
-                "msg": f"XGBoost Forecast (Imbalance Weighted)"
-            }
-        except Exception as e:
-            return {"confidence": 0.0, "prediction": "Error", "msg": str(e)}
+        # REMOVED AS REQUESTED
+        return {"confidence": 0.0, "prediction": "N/A", "msg": "ML Module Disabled"}
 
     # --- NEW: MACHINE LEARNING MODULE 2 (BANDAR/ACCUMULATION DETECTOR - XGBOOST) ---
     def predict_bandar_accumulation(self):
-        try:
-            # ML Uses FULL 5-YEAR Data (self.df)
-            if self.data_len < 150: return {"probability": 0, "verdict": "Insufficient Data"}
-            
-            ml_df = self.df.copy()
-            future_high = ml_df['High'].shift(-10).rolling(10).max()
-            future_low = ml_df['Low'].shift(-10).rolling(10).min()
-            
-            # Create Target: >5% Gain and <2% Drawdown (Very Rare Event)
-            ml_df['Target'] = ((future_high > ml_df['Close'] * 1.05) & (future_low > ml_df['Close'] * 0.98)).astype(int)
-            
-            # Calculate Imbalance Ratio for XGBoost
-            pos_count = ml_df['Target'].sum()
-            neg_count = len(ml_df) - pos_count
-            scale_pos_weight = neg_count / pos_count if pos_count > 0 else 1.0
-            
-            ml_df['CMF'] = self.calc_cmf(ml_df['High'], ml_df['Low'], ml_df['Close'], ml_df['Volume'], 20)
-            ml_df['RVOL'] = ml_df['Volume'] / ml_df['Volume'].rolling(20).mean()
-            ml_df['NVI_Change'] = ml_df['NVI'].pct_change(5)
-            ml_df['VWAP_Ratio'] = ml_df['Close'] / ml_df['VWAP']
-            ml_df['Body_Size'] = (abs(ml_df['Close'] - ml_df['Open']) / (ml_df['High'] - ml_df['Low'])).fillna(0)
-            
-            # --- NEW FEATURE: Buying Pressure (CLV) ---
-            range_len = ml_df['High'] - ml_df['Low']
-            range_len = range_len.replace(0, 0.00001)
-            clv = ((ml_df['Close'] - ml_df['Low']) - (ml_df['High'] - ml_df['Close'])) / range_len
-            ml_df['Buy_Pressure'] = ml_df['Volume'] * (clv + 1) / 2
-            ml_df['Buy_Pressure_Ratio'] = ml_df['Buy_Pressure'] / ml_df['Volume']
-
-            # Lags for Accumulation
-            ml_df['CMF_Lag1'] = ml_df['CMF'].shift(1)
-            ml_df['RVOL_Lag1'] = ml_df['RVOL'].shift(1)
-
-            features = ['CMF', 'RVOL', 'NVI_Change', 'VWAP_Ratio', 'Body_Size', 'MFI', 'CMF_Lag1', 'RVOL_Lag1', 'Buy_Pressure_Ratio']
-            ml_df = ml_df.dropna()
-            
-            if len(ml_df) < 100: return {"probability": 0, "verdict": "Data Error"}
-
-            X = ml_df[features].iloc[:-10]
-            y = ml_df['Target'].iloc[:-10]
-            
-            # Weighted XGBoost to find rare accumulation events
-            clf = XGBClassifier(
-                n_estimators=100, 
-                learning_rate=0.05, 
-                max_depth=4, 
-                reg_alpha=0.1, 
-                scale_pos_weight=scale_pos_weight, # FIX: Crucial for rare event detection
-                random_state=42, 
-                eval_metric='logloss'
-            )
-            clf.fit(X, y)
-            
-            last_row = ml_df[features].iloc[-1:].values
-            prob = clf.predict_proba(last_row)[0][1] * 100
-            
-            # Stricter Verdicts
-            verdict = "DETECTED" if prob > 75 else "POSSIBLE" if prob > 50 else "NONE"
-            
-            return {
-                "probability": prob,
-                "verdict": verdict,
-                "msg": f"Accumulation Probability: {prob:.1f}%"
-            }
-            
-        except: return {"probability": 0, "verdict": "Error"}
+        # REMOVED AS REQUESTED
+        return {"probability": 0, "verdict": "Disabled"}
 
     # --- NEW: MACHINE LEARNING MODULE 3 (SUPPORT LEVEL PREDICTION - XGBOOST REGRESSOR) ---
     def predict_support_level_ml(self):
@@ -2037,8 +1910,8 @@ class StockAnalyzer:
             "lc_stats": self.backtest_low_cheat_performance(), 
             "fib_stats": self.backtest_fib_bounce(),
             "ma_stats": self.backtest_ma_support_all(),
-            "ml_prediction": self.predict_machine_learning(), # General Price Prediction
-            "bandar_ml": self.predict_bandar_accumulation(), # Bandar ML
+            #"ml_prediction": self.predict_machine_learning(), # General Price Prediction - DISABLED
+            #"bandar_ml": self.predict_bandar_accumulation(), # Bandar ML - DISABLED
             "ai_support": self.predict_support_level_ml(), # --- NEW: Support Prediction
             "hurst": self.calc_hurst(self.df['Close']), # --- NEW: Hurst
             "rs_score": self.calc_relative_strength_score(), # --- NEW: RS Score
