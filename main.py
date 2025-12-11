@@ -61,7 +61,10 @@ def print_report(data, balance):
     sm = data['context']['smart_money']
     symbol = "✅" if "BULLISH" in sm['status'] else "⚠️ " if "BEARISH" in sm['status'] else "🔹"
     print(f"\n{symbol} SMART MONEY (Bandarmology Proxy)")
-    print(f"   Status: {sm['status']}")
+    
+    # --- UPDATED: Show Accumulation Duration ---
+    duration_str = f"({sm.get('accum_days', 0)} Days Accumulating)"
+    print(f"   Status: {sm['status']} {duration_str}")
     
     metrics = sm.get('metrics', {})
     if metrics:
@@ -75,23 +78,23 @@ def print_report(data, balance):
         r_spikes = metrics.get('red_spikes', 0)
         print(f"   Big Moves: {g_spikes} Accumulation Days vs {r_spikes} Distribution Days")
     
-    # --- NEW: BANDAR ML SECTION ---
-    b_ml = data['context'].get('bandar_ml', {})
-    prob = b_ml.get('probability', 0)
-    print(f"   AI Accumulation Score: {prob:.1f}% ({b_ml.get('verdict', 'Unknown')})")
+    # --- ML PREDICTIONS REMOVED ---
+    # b_ml = data['context'].get('bandar_ml', {})
+    # prob = b_ml.get('probability', 0)
+    # print(f"   AI Accumulation Score: {prob:.1f}% ({b_ml.get('verdict', 'Unknown')})")
 
     for s in sm['signals']: print(f"   - {s}")
     
-    # --- NEW: AI PREDICTION (XGBOOST) ---
-    ml = data['context'].get('ml_prediction', {})
-    print(f"\n🤖 AI / MACHINE LEARNING (XGBoost Strict Mode)")
-    if ml.get('prediction') == "N/A":
-         print(f"   Status: Insufficient Data")
-    else:
-        conf = ml.get('confidence', 0)
-        emoji = "🚀" if "High Conviction" in ml.get('prediction') else "🐻" if "BEARISH" in ml.get('prediction') else "⚖️"
-        print(f"   Forecast:   {emoji} {ml.get('prediction')} ({conf:.1f}% Confidence)")
-        print(f"   Logic:      {ml.get('msg')}")
+    # --- ML PREDICTIONS REMOVED ---
+    # ml = data['context'].get('ml_prediction', {})
+    # print(f"\n🤖 AI / MACHINE LEARNING (XGBoost Strict Mode)")
+    # if ml.get('prediction') == "N/A":
+    #      print(f"   Status: Insufficient Data")
+    # else:
+    #     conf = ml.get('confidence', 0)
+    #     emoji = "🚀" if "High Conviction" in ml.get('prediction') else "🐻" if "BEARISH" in ml.get('prediction') else "⚖️"
+    #     print(f"   Forecast:   {emoji} {ml.get('prediction')} ({conf:.1f}% Confidence)")
+    #     print(f"   Logic:      {ml.get('msg')}")
 
     # 5. SETUP & STRUCTURE (Replaced Patterns)
     print(f"\n💎 SETUP & STRUCTURE")
