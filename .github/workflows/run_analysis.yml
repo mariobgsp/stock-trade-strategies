@@ -50,7 +50,16 @@ jobs:
       run: python main.py ELIT --period 3y --balance 1000000
     - name: Analyze Stock 10
       run: python main.py SGER --period 3y --balance 1000000
-
+    - name: Analyze Stock 11
+      run: python main.py EKAD --period 3y --balance 1000000
+    - name: Analyze Stock 12
+      run: python main.py MEDC --period 3y --balance 1000000
+    - name: Analyze Stock 13
+      run: python main.py TMAS --period 3y --balance 1000000
+    - name: Analyze Stock 14
+      run: python main.py KLAS --period 3y --balance 1000000
+    - name: Analyze Stock 15
+      run: python main.py DMAS --period 3y --balance 1000000
 
 
 
