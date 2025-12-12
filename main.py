@@ -1,96 +1,164 @@
+"""
+main.py - CLI Interface for IHSG Swing Trading System
+Clean, minimalist, beginner-friendly UX
+"""
+
 import sys
-import argparse
-from engine import StrategyEngine
+from engine import TradingEngine
 
-def print_separator():
-    print("-" * 50)
 
-def print_header(text):
-    print(f"\n=== {text.upper()} ===")
+def print_header():
+    """Print clean header"""
+    print("\n" + "=" * 70)
+    print("      IHSG SWING TRADING SYSTEM - Professional Analysis")
+    print("=" * 70 + "\n")
 
-def format_currency(val):
-    return f"Rp {int(val):,}"
+
+def print_section(title):
+    """Print section separator"""
+    print("\n" + "-" * 70)
+    print(f"  {title}")
+    print("-" * 70)
+
+
+def format_currency(value):
+    """Format as Indonesian Rupiah"""
+    return f"Rp {value:,.0f}"
+
+
+def display_signal(signal):
+    """Display trading signal in clean format"""
+    
+    if signal is None:
+        print("\n[ERROR] Unable to generate signal. Please check the ticker symbol.\n")
+        return
+    
+    # VERDICT CARD
+    print_section("VERDICT")
+    verdict = signal['verdict']
+    if verdict == 'BUY':
+        print(f"\n   >>> {verdict} <<<")
+        print(f"   Strategy: {signal['strategy']}")
+    else:
+        print(f"\n   >>> {verdict} <<<")
+        print(f"\n   {signal['reason']}")
+        print("\n   Recommendation: Wait for better market conditions.")
+        print("\n" + "=" * 70 + "\n")
+        return
+    
+    # TRADE PLAN
+    print_section("TRADE PLAN")
+    print(f"\n   Entry Price:        {format_currency(signal['entry'])}")
+    print(f"   Stop Loss:          {format_currency(signal['stop_loss'])}")
+    print(f"   Take Profit 1R:     {format_currency(signal['tp_1r'])}")
+    print(f"   Take Profit 2R:     {format_currency(signal['tp_2r'])}")
+    print(f"   Take Profit 3R:     {format_currency(signal['tp_3r'])}")
+    
+    risk = signal['entry'] - signal['stop_loss']
+    reward = signal['tp_3r'] - signal['entry']
+    print(f"\n   Risk per share:     {format_currency(risk)}")
+    print(f"   Reward per share:   {format_currency(reward)}")
+    print(f"   Risk:Reward Ratio:  1:{reward/risk:.1f}")
+    
+    # THE LOGIC
+    print_section("THE LOGIC (Why This Trade?)")
+    print(f"\n   {signal['explanation']}")
+    print(f"\n   This setup has historically worked {signal['win_rate']:.1f}% of the time")
+    print(f"   based on the last 3 years of data.")
+    
+    # SAFETY SCORE
+    print_section("SAFETY SCORE")
+    win_rate = signal['win_rate']
+    
+    if win_rate >= 65:
+        safety = "HIGH"
+        stars = "★★★★★"
+    elif win_rate >= 60:
+        safety = "GOOD"
+        stars = "★★★★☆"
+    elif win_rate >= 55:
+        safety = "MODERATE"
+        stars = "★★★☆☆"
+    else:
+        safety = "LOW"
+        stars = "★★☆☆☆"
+    
+    print(f"\n   Safety Rating:  {safety} {stars}")
+    print(f"   Win Rate:       {win_rate:.1f}%")
+    print(f"   Confidence:     Historical backtest shows {win_rate:.0f} wins")
+    print(f"                   out of every 100 similar setups.")
+    
+    # TECHNICAL DEEP DIVE
+    print_section("TECHNICAL DEEP DIVE")
+    print(f"\n   Current Price:      {format_currency(signal['current_price'])}")
+    print(f"   RSI (14):           {signal['rsi']:.2f}")
+    print(f"   Stochastic %K:      {signal['stoch_k']:.2f}")
+    print(f"   Stochastic %D:      {signal['stoch_d']:.2f}")
+    print(f"   VWAP:               {format_currency(signal['vwap'])}")
+    print(f"   OBV Slope:          {signal['obv_slope']:.0f}")
+    
+    print(f"\n   Pattern Recognition:")
+    print(f"      VCP Detected:         {'YES' if signal['is_vcp'] else 'NO'}")
+    if signal['is_vcp']:
+        print(f"      VCP Contractions:     {signal['vcp_contractions']}")
+    print(f"      MA Squeeze:           {'YES' if signal['is_squeeze'] else 'NO'}")
+    if signal['is_squeeze']:
+        print(f"      Squeeze Range:        {signal['squeeze_pct']:.2f}%")
+    
+    print(f"\n   Smart Money Analysis:")
+    print(f"      Current Phase:        {signal['smart_money_phase']}")
+    print(f"      Phase Started:        {signal['smart_money_start']}")
+    
+    print(f"\n   Support & Resistance:")
+    print(f"      Pivot Point:          {format_currency(signal['pivots']['PP'])}")
+    print(f"      Resistance 1:         {format_currency(signal['pivots']['R1'])}")
+    print(f"      Resistance 2:         {format_currency(signal['pivots']['R2'])}")
+    print(f"      Support 1:            {format_currency(signal['pivots']['S1'])}")
+    print(f"      Support 2:            {format_currency(signal['pivots']['S2'])}")
+    
+    print(f"\n   Fibonacci Levels:")
+    for level, price in signal['fibonacci'].items():
+        print(f"      {level:12s}:        {format_currency(price)}")
+    
+    # FOOTER
+    print("\n" + "=" * 70)
+    print("  Disclaimer: This is for educational purposes only.")
+    print("  Always do your own research and manage your risk.")
+    print("=" * 70 + "\n")
+
 
 def main():
-    parser = argparse.ArgumentParser(description="IHSG Swing Trading Quant Engine")
-    parser.add_argument("ticker", type=str, help="Stock Ticker (e.g., BBRI)")
-    args = parser.parse_args()
-
-    ticker = args.ticker.upper()
-    
-    # Auto-append .JK for Indonesia Stock Exchange if missing
-    if not ticker.endswith(".JK"):
-        ticker += ".JK"
-
-    print(f"\nInitializing Quantitative Engine for {ticker}...")
-    print("Fetching 3 years of OHLCV data via yfinance...")
-    print("Running Grid Search Optimization (MA, RSI, Stoch)...")
-    print("Backtesting strategies with 1:3 R:R mandate...")
-    
-    try:
-        engine = StrategyEngine(ticker)
-        result = engine.run_optimization()
-    except Exception as e:
-        print(f"\nERROR: Could not analyze {ticker}. {str(e)}")
-        print("Make sure the ticker is correct and available on Yahoo Finance.")
+    """Main execution"""
+    if len(sys.argv) < 2:
+        print("\n[ERROR] Please provide a stock ticker symbol.")
+        print("Usage: python main.py <TICKER>")
+        print("Example: python main.py BBRI\n")
         sys.exit(1)
-
-    # --- DASHBOARD OUTPUT ---
-
-    # 1. VERDICT CARD
-    print("\n" + "=" * 50)
-    print(f" STOCK: {ticker.replace('.JK', '')}   |   VERDICT: {result['verdict']}")
-    print("=" * 50)
-
-    # 2. TRADE PLAN
-    if result['verdict'] == "BUY":
-        plan = result['plan']
-        print_header("EXECUTION PLAN (OJK Compliant)")
-        print(f" ENTRY PRICE : {format_currency(plan['entry'])}")
-        print(f" STOP LOSS   : {format_currency(plan['sl'])} (Risk 1R)")
-        print_separator()
-        print(f" TARGET 1    : {format_currency(plan['tp1'])} (1R)")
-        print(f" TARGET 2    : {format_currency(plan['tp2'])} (2R)")
-        print(f" TARGET 3    : {format_currency(plan['tp3'])} (3R)")
     
-    # 3. THE LOGIC
-    print_header("THE LOGIC (WHY?)")
-    print(f" {result['logic']}")
+    ticker = sys.argv[1].upper()
     
-    # 4. SAFETY SCORE / STATS
-    print_header("SAFETY SCORE")
-    if result['stats']:
-        wr = result['stats']['win_rate']
-        count = result['stats']['trade_count']
-        rating = "HIGH" if wr > 75 else "MODERATE"
-        print(f" Strategy Used    : {result['stats']['strategy']}")
-        print(f" Historical WR    : {wr:.2f}% (over {count} trades)")
-        print(f" Confidence Lvl   : {rating}")
-    else:
-        print(" No strategy achieved the mandatory >65% Win Rate.")
-        print(" Recommendation: Do not trade. Wait for better conditions.")
+    print_header()
+    print(f"Analyzing {ticker} on Indonesia Stock Exchange...")
+    print("Fetching 3 years of data and running advanced analysis...")
+    print("This may take 30-60 seconds...\n")
+    
+    # Initialize engine
+    engine = TradingEngine(ticker, years=3)
+    
+    # Fetch data
+    if not engine.fetch_data():
+        print(f"\n[ERROR] Could not fetch data for {ticker}.")
+        print("Please check if the ticker is valid on IDX.\n")
+        sys.exit(1)
+    
+    print("Data loaded successfully. Running backtests and optimization...")
+    
+    # Generate signal
+    signal = engine.generate_signal()
+    
+    # Display results
+    display_signal(signal)
 
-    # 5. TECHNICAL DEEP DIVE
-    dd = result['deep_dive']
-    print_header("TECHNICAL DEEP DIVE")
-    print(f" Current Price    : {format_currency(dd['price'])}")
-    print(f" Scipy Support    : {format_currency(dd['support_scipy'])}")
-    print(f" RSI (14)         : {dd['rsi']:.2f}")
-    print(f" Stoch K          : {dd['stoch_k']:.2f}")
-    print(f" MA Squeeze?      : {'YES' if dd['ma_squeeze'] else 'NO'}")
-    print_separator()
-    print(" [SMART MONEY ANALYSIS]")
-    print(f" OBV Slope        : {dd['obv_slope']:.4f}")
-    print(f" Smart Money Start: {dd['smart_money_start']}")
-    
-    # Interpretation of slope
-    if dd['obv_slope'] > 0:
-        print(" Status           : ACCUMULATION DETECTED")
-    else:
-        print(" Status           : DISTRIBUTION / NEUTRAL")
-    
-    print("\n" + "=" * 50 + "\n")
 
 if __name__ == "__main__":
     main()
-
