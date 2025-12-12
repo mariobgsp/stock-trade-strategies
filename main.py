@@ -3,92 +3,89 @@ import sys
 from engine import TradingEngine
 
 def print_header(title):
-    print("\n" + "="*50)
+    print(f"\n{'='*50}")
     print(f" {title.upper()}")
-    print("="*50)
+    print(f"{'='*50}")
 
 def print_separator():
-    print("-" * 50)
+    print(f"{'-'*50}")
+
+def format_percentage(val):
+    return f"{val * 100:.1f}%"
 
 def main():
-    parser = argparse.ArgumentParser(description="Indonesian Stock Exchange Swing Trading CLI")
-    parser.add_argument("ticker", type=str, help="Stock Ticker (e.g., BBCA, ANTM)")
+    parser = argparse.ArgumentParser(description='Senior Quant Swing Trading CLI for IDX')
+    parser.add_argument('ticker', type=str, help='Stock Ticker (e.g., BBRI, GOTO)')
     args = parser.parse_args()
 
-    print(f"\nInitializing Advanced Technical Analysis for {args.ticker}...")
+    ticker = args.ticker.upper()
+    print(f"Initializing Quant Engine for {ticker}...")
     
-    engine = TradingEngine(args.ticker)
+    engine = TradingEngine(ticker)
     result = engine.analyze()
-    
-    if not result:
-        print("Analysis Failed. Check ticker or internet connection.")
+
+    if "error" in result:
+        print(f"CRITICAL ERROR: {result['error']}")
         sys.exit(1)
 
-    d = result['data']
-    setup = result['setup']
-    probs = result['probs']
-
     # --- VERDICT SECTION ---
-    print_header(f"VERDICT: {result['verdict']}")
+    print_header("STRATEGIC VERDICT")
     
-    if result['verdict'] == "BUY":
-        print(f"Strategy Triggered: {result['strategy']}")
-        print_separator()
-        print("TRADE PLAN (Strict 1:3 RR):")
-        print(f"[*] ENTRY PRICE : {setup[0]:,.0f}")
-        print(f"[!] STOP LOSS   : {setup[1]:,.0f} (RISK: {setup[0]-setup[1]:,.0f})")
-        print(f"[$] TARGET 1 (1R): {setup[2]:,.0f} (Prob: {probs[1]:.1f}%)")
-        print(f"[$] TARGET 2 (2R): {setup[3]:,.0f} (Prob: {probs[2]:.1f}%)")
-        print(f"[$] TARGET 3 (3R): {setup[4]:,.0f} (Prob: {probs[3]:.1f}%)")
+    print(f"VERDICT:  {result['verdict']}")
+    print_separator()
+    
+    print("TRADE PLAN:")
+    print(f"  Entry Price:  {result['entry']:,.0f}")
+    print(f"  Stop Loss:    {result['stop_loss']:,.0f}")
+    print(f"  Target 1 (1R): {result['tp1']:,.0f}")
+    print(f"  Target 2 (2R): {result['tp2']:,.0f}")
+    print(f"  Target 3 (3R): {result['tp3']:,.0f}")
+    
+    print_separator()
+    print("THE LOGIC:")
+    
+    vwap_context = "Healthy" if result['vwap_diff'] > 0 else "Weak"
+    pos_neg = "ABOVE" if result['vwap_diff'] > 0 else "BELOW"
+    
+    explanation = (
+        f"Triggered by {result['strategy']} logic. "
+        f"Price is {vwap_context} ({abs(result['vwap_diff']):.2f}% {pos_neg} VWAP). "
+    )
+    
+    if result['accum_status'] == "Accumulation":
+        explanation += "Smart Money is accumulating (OBV Slope +)."
+    elif result['accum_status'] == "Distribution":
+        explanation += "WARNING: Smart Money distribution detected."
         
-        print_separator()
-        print("THE LOGIC:")
-        print(f"Triggered by {result['strategy']}.")
-        print(f"Price is {d['vwap_diff']:.2f}% relative to VWAP.")
-        if d['vcp']: print("Bonus: Valid VCP Pattern detected (Supply drying up).")
-        if d['squeeze']: print("Bonus: MA Squeeze detected (Energy building).")
-        print(f"Smart Money is in {d['sm_status']} phase.")
-
-        print_separator()
-        print(f"SAFETY SCORE / HISTORICAL WIN RATE: {result['win_rate']:.1f}%")
-        if result['win_rate'] < 60:
-            print("(WARNING: Win rate is low. Strict position sizing recommended.)")
+    print(explanation)
     
-    else:
-        print("No high-probability setup found (>60% WR).")
-        print("Recommendation: Sit on hands. Cash is a position.")
+    print_separator()
+    print("SAFETY SCORE (Backtest Validation):")
+    print(f"  Historical Win Rate: {format_percentage(result['win_rate'])}")
+    print(f"  Prob to hit 1R:      {format_percentage(result['probs']['1R'])}")
+    print(f"  Prob to hit 2R:      {format_percentage(result['probs']['2R'])}")
+    print(f"  Prob to hit 3R:      {format_percentage(result['probs']['3R'])}")
 
     # --- DATA SECTION ---
-    print("\n")
-    print("="*50)
-    print(" DEEP DATA ANALYTICS")
-    print("="*50)
+    print_header("QUANTITATIVE DATA")
     
-    print(f"Asset Status   : {d['is_ipo']}")
-    print(f"Current Price  : {d['price']:,.0f}")
+    # Asset Status
+    asset_type = "IPO / New Listing (< 6 mo data)" if result['is_ipo'] else "Mature Stock"
+    print(f"Asset Class:  {asset_type}")
+    
+    # Smart Money
+    print(f"Smart Money:  {result['accum_status']} (Slope: {result['obv_slope']:.4f})")
+    print(f"Phase Start:  {result['accum_start']}")
+    
     print_separator()
+    print("KEY LEVELS & PATTERNS:")
+    print(f"  RSI (14):     {result['rsi']:.2f}")
+    print(f"  VWAP:         {result['indicators']['VWAP']:,.2f}")
+    print(f"  VCP Pattern:  {'DETECTED' if result['vcp_detected'] else 'None'}")
+    print(f"  MA Squeeze:   {'ACTIVE' if result['ma_squeeze'] else 'None'}")
     
-    print(f"SMART MONEY    : {d['sm_status']}")
-    print(f"Phase Start    : {d['sm_date']}")
-    print(f"VWAP Context   : {d['vwap_diff']:+.2f}% vs Price")
-    print_separator()
-    
-    print("KEY LEVELS:")
-    print(f"Pivot Point    : {d['pivot']:,.0f}")
-    print(f"Bounce Support : {d['last_bounce']:,.0f}")
-    print(f"Fib 0.618      : {d['fib_618']:,.0f}")
-    print_separator()
-    
-    print("INDICATOR OPTIMIZATION:")
-    print(f"Used Params    : RSI {d['params']['rsi']}, MA Fast {d['params']['ma_short']}, MA Slow {d['params']['ma_long']}")
-    print(f"RSI Value      : {d['rsi']:.2f}")
-    print(f"Stochastic K   : {d['stoch']:.2f}")
-    print_separator()
-    
-    print("PATTERN RECOGNITION:")
-    print(f"VCP Pattern    : {'DETECTED' if d['vcp'] else 'None'}")
-    print(f"Super Squeeze  : {'ACTIVE' if d['squeeze'] else 'Inactive'}")
-    print("="*50 + "\n")
+    print("\nDisclaimer: For Educational Purposes Only. Not Financial Advice.")
+    print("Market Data provided by yfinance. Rules based on IDX/OJK constraints.")
 
 if __name__ == "__main__":
     main()
