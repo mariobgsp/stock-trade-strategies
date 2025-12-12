@@ -1,131 +1,100 @@
 import sys
 import argparse
-import pandas as pd
-from engine import fetch_data, TAEngine, Bandarmology, StrategyOptimizer, IDXRules, BacktestResult
+from colorama import init, Fore, Style, Back
+from engine import QuantEngine
 
-# --- Formatting Helpers ---
-def print_header(title):
-    print(f"\n{'='*60}")
-    print(f" {title.upper()}")
-    print(f"{'='*60}")
+# Initialize Colorama
+init(autoreset=True)
 
-def format_currency(val):
-    return f"Rp {val:,.0f}"
+def print_header():
+    print(f"\n{Back.BLUE}{Fore.WHITE} ========================================================== {Style.RESET_ALL}")
+    print(f"{Back.BLUE}{Fore.WHITE}      IHSG SWING TRADER PRO - QUANT ENGINE (v1.0)           {Style.RESET_ALL}")
+    print(f"{Back.BLUE}{Fore.WHITE} ========================================================== {Style.RESET_ALL}\n")
 
-def format_pct(val):
-    return f"{val:.2f}%"
+def print_verdict_card(data):
+    verdict = data['verdict']
+    color = Fore.WHITE
+    
+    if "BUY" in verdict:
+        color = Fore.GREEN
+    elif "NO TRADE" in verdict:
+        color = Fore.RED
+    else:
+        color = Fore.YELLOW
 
-def get_signal_color(signal):
-    # Simple ASCII indicators since colorama isn't guaranteed in all envs
-    if signal == "BUY": return "[!!! BUY !!!]"
-    if signal == "WAIT": return "[ WAIT ]"
-    return "[ NO TRADE ]"
+    print(f"{Style.BRIGHT}TARGET: {Fore.CYAN}{data['ticker']}{Style.RESET_ALL} | PRICE: {Fore.CYAN}Rp {int(data['current_price'])}{Style.RESET_ALL}")
+    print(f"\n{Style.BRIGHT}------------------ AI VERDICT ------------------")
+    print(f"{Style.BRIGHT}SIGNAL: {color}{verdict}{Style.RESET_ALL}")
+    print(f"{Style.BRIGHT}WHY?:   {Fore.WHITE}{data['why']}{Style.RESET_ALL}")
+    
+    if data['patterns']['Accumulation']:
+        print(f"        {Fore.GREEN}✔ Smart Money Accumulation Detected since {data['smart_money_date'].strftime('%Y-%m-%d')}{Style.RESET_ALL}")
+    if data['patterns']['VCP']:
+        print(f"        {Fore.GREEN}✔ VCP Pattern (Volatility Contraction) Confirmed{Style.RESET_ALL}")
+    if data['patterns']['Squeeze']:
+        print(f"        {Fore.MAGENTA}✔ MA Squeeze / Superclose Detected{Style.RESET_ALL}")
 
-# --- Main Analysis Flow ---
-def analyze_stock(ticker: str):
-    try:
-        df = fetch_data(ticker)
-    except Exception as e:
-        print(f"Error: {e}")
+def print_trade_plan(data):
+    if "NO TRADE" in data['verdict']:
         return
 
-    last_price = df.iloc[-1]['Close']
+    plan = data['trade_plan']
+    print(f"\n{Style.BRIGHT}------------------ TRADE PLAN (OJK RULES) ------------------")
+    print(f"ENTRY: {Fore.CYAN}Rp {int(data['current_price'])}{Style.RESET_ALL} (Market)")
+    print(f"STOP LOSS: {Fore.RED}Rp {int(plan['sl'])}{Style.RESET_ALL} (risk 1R)")
+    print(f"TARGET 1:  {Fore.GREEN}Rp {int(plan['tp1'])}{Style.RESET_ALL} (1.5R - Secure Profits)")
+    print(f"TARGET 2:  {Fore.GREEN}Rp {int(plan['tp2'])}{Style.RESET_ALL} (3.0R - Golden Ratio)")
+    print(f"TARGET 3:  {Fore.GREEN}Rp {int(plan['tp3'])}{Style.RESET_ALL} (4.5R - Runner)")
+
+def print_stats(data):
+    wr = data['win_rate']
+    wr_color = Fore.GREEN if wr > 65 else Fore.RED
     
-    # 1. Run Optimization
-    print("Running Grid Search Optimization Engine...")
-    optimizer = StrategyOptimizer(df)
-    best_strat = optimizer.optimize()
+    print(f"\n{Style.BRIGHT}------------------ RISK & LOGIC ------------------")
+    print(f"Hist. Win Rate: {wr_color}{wr:.1f}%{Style.RESET_ALL} (Based on 3Y Backtest)")
+    print(f"Best Strategy:  MA Crossover {data['best_params'][0]}/{data['best_params'][1]} + RSI < {data['best_params'][2]}")
     
-    # 2. Calculate Indicators using BEST parameters
-    # Fallback to standard if optimization failed
-    rsi_p = best_strat.params.get('rsi', 14)
-    df['RSI_OPT'] = TAEngine.rsi(df['Close'], rsi_p)
-    stoch = TAEngine.stoch_osc(df['High'], df['Low'], df['Close'])
-    df['Stoch_K'] = stoch['k']
+    print(f"\n{Style.BRIGHT}------------------ TECH DEEP DIVE ------------------")
+    print(f"RSI (14):     {data['technicals']['rsi']:.2f}")
+    print(f"Stoch K:      {data['technicals']['stoch_k']:.2f}")
+    print(f"VWAP:         {data['technicals']['vwap']:.2f}")
+    print(f"OBV Slope:    {data['smart_money_slope']:.4f}")
+
+def main():
+    parser = argparse.ArgumentParser(description='IHSG Swing Trading Quant CLI')
+    parser.add_argument('ticker', type=str, help='Stock Ticker (e.g., BBRI, TLKM)')
+    args = parser.parse_args()
+
+    print_header()
+    print(f"Initializing Quantum Engine for {args.ticker}...")
     
-    # 3. Pattern Recognition
-    is_squeeze = TAEngine.check_ma_squeeze(df)
-    is_vcp = TAEngine.check_vcp(df)
+    engine = QuantEngine(args.ticker)
     
-    # 4. Bandarmology
-    flow_data = Bandarmology.analyze_flow(df)
+    # 1. Fetch
+    print("Fetching 3 years of OHLCV data from Yahoo Finance...")
+    success, msg = engine.fetch_data()
+    if not success:
+        print(f"{Fore.RED}Error: {msg}{Style.RESET_ALL}")
+        sys.exit(1)
+
+    # 2. Analyze
+    print("Running Sklearn Linear Regression on OBV...")
+    print("Calculating Scipy Local Extrema for Support/Resistance...")
+    print("Grid Searching Strategy Parameters (Optimization Loop)...")
     
-    # 5. Key Levels
-    pivots = TAEngine.pivot_points(df)
-    fibs = TAEngine.get_fib_levels(df)
-    
-    # 6. Signal Logic (Executive Decision)
-    # Strict Logic: Must match verified strategy AND Bandarmology not distribution
-    signal = "WAIT"
-    reason = "Conditions not optimal."
-    
-    current_rsi = df.iloc[-1]['RSI_OPT']
-    
-    if best_strat.is_valid:
-        # Technical Buy Condition
-        tech_buy = (current_rsi < 60) and (last_price > df.iloc[-1]['vwap'])
+    try:
+        results = engine.optimize_and_analyze()
         
-        # Bandarmology Condition (Avoid Distribution)
-        flow_ok = flow_data['status'] in ["STEALTH ACCUMULATION", "MARKUP", "NEUTRAL"]
+        # 3. Output
+        print_verdict_card(results)
+        print_trade_plan(results)
+        print_stats(results)
         
-        if tech_buy and flow_ok:
-            signal = "BUY"
-            reason = f"Optimized Strategy Trigger (WinRate {best_strat.win_rate:.1f}%). Flow is {flow_data['status']}."
-            if is_squeeze: reason += " + MA Squeeze Detected."
-            if is_vcp: reason += " + VCP Pattern Detected."
-        else:
-            reason = "Waiting for optimized entry setup."
-    else:
-        signal = "NO TRADE"
-        reason = "No strategy config met >65% Win Rate requirement."
-
-    # 7. Targets
-    sl, tp1 = IDXRules.calculate_targets(last_price, 3.0)
-    
-    # --- RENDER DASHBOARD ---
-    print_header(f"QUANT ANALYTICS: {ticker.upper()}")
-    
-    print(f"\n>>> EXECUTIVE SUMMARY")
-    print(f"Action:       {get_signal_color(signal)}")
-    print(f"Current Price: {format_currency(last_price)}")
-    print(f"Reason:       {reason}")
-    if signal == "BUY":
-        print(f"Entry Strategy: Breakout/Pullback at Market")
-        print(f"Stop Loss:      {format_currency(sl)} (OJK Tick Compliant)")
-        print(f"Target (3R):    {format_currency(tp1)}")
-
-    print(f"\n>>> PROBABILITY ANALYSIS (Based on 3Y Backtest)")
-    if best_strat.is_valid:
-        print(f"Optimized Config: RSI {best_strat.params['rsi']}, MA {best_strat.params['ma']}")
-        print(f"Hist. Win Rate:   {format_pct(best_strat.win_rate)} (Threshold > 65% MET)")
-        print(f"Total Trades:     {best_strat.total_trades}")
-        print(f"Prob. to Hit 1R:  85% (Estimated)") # Model confidence
-        print(f"Prob. to Hit 2R:  {format_pct(best_strat.win_rate * 0.9)}")
-        print(f"Prob. to Hit 3R:  {format_pct(best_strat.win_rate * 0.6)}")
-    else:
-        print("!! WARNING: No robust strategy found for this ticker > 65% WR !!")
-
-    print(f"\n>>> BANDARMOLOGY DASHBOARD")
-    print(f"Flow Status:  {flow_data['status']}")
-    print(f"Phase Start:  {flow_data['phase_start']}")
-    print(f"Strength:     {flow_data['strength']}")
-    print(f"Price vs VWAP: {format_pct(flow_data['vwap_gap']*100)} gap")
-
-    print(f"\n>>> TECHNICAL DEEP DIVE")
-    print(f"RSI ({rsi_p}):      {current_rsi:.2f}")
-    print(f"Stoch (14,3):   {df.iloc[-1]['Stoch_K']:.2f}")
-    print(f"MA Squeeze:     {'DETECTED (Volatile Breakout Imminent)' if is_squeeze else 'No'}")
-    print(f"VCP Pattern:    {'DETECTED (Contraction)' if is_vcp else 'No'}")
-    
-    print(f"\n>>> KEY LEVELS (Support/Res)")
-    print(f"Pivot Support:  {format_currency(pivots['S1'])}")
-    print(f"Fib 0.618 (Golden): {format_currency(fibs['0.618'])}")
-    print(f"Fib 0.382:      {format_currency(fibs['0.382'])}")
+    except Exception as e:
+        print(f"{Fore.RED}Analysis Failed: {str(e)}{Style.RESET_ALL}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='IHSG Quant Trading Engine')
-    parser.add_argument('ticker', type=str, help='Stock Ticker (e.g. BBCA, TLKM)')
-    args = parser.parse_args()
-    
-    analyze_stock(args.ticker)
+    main()
 
