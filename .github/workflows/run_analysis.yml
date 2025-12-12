@@ -6,7 +6,7 @@ on:
       - "run-analysis"
       - "run-bandar-analysis"
     paths:
-      - '**.py'             
+      - 'main.py'             
       - 'requirements.txt'   
       - '.github/workflows/**' 
   workflow_dispatch:
