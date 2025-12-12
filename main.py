@@ -1,91 +1,99 @@
-import argparse
 import sys
-from engine import TradingEngine
+import argparse
+from engine import QuantEngine
 
-def print_header(title):
-    print(f"\n{'='*50}")
-    print(f" {title.upper()}")
-    print(f"{'='*50}")
+def print_separator(char='-'):
+    print(char * 60)
 
-def print_separator():
-    print(f"{'-'*50}")
+def normalize_ticker(ticker):
+    ticker = ticker.strip().upper()
+    if not ticker.endswith('.JK'):
+        ticker += '.JK'
+    return ticker
 
-def format_percentage(val):
-    return f"{val * 100:.1f}%"
+def format_probability(prob):
+    # Safety rating visualization
+    if prob >= 80: return f"{prob:.1f}% (EXCELLENT)"
+    if prob >= 60: return f"{prob:.1f}% (GOOD)"
+    if prob >= 40: return f"{prob:.1f}% (MODERATE)"
+    return f"{prob:.1f}% (RISKY)"
 
 def main():
-    parser = argparse.ArgumentParser(description='Senior Quant Swing Trading CLI for IDX')
-    parser.add_argument('ticker', type=str, help='Stock Ticker (e.g., BBRI, GOTO)')
+    parser = argparse.ArgumentParser(description="IHSG Swing Trading Quant CLI")
+    parser.add_argument("ticker", type=str, help="Stock Ticker (e.g., BBCA)")
     args = parser.parse_args()
 
-    ticker = args.ticker.upper()
-    print(f"Initializing Quant Engine for {ticker}...")
+    ticker = normalize_ticker(args.ticker)
     
-    engine = TradingEngine(ticker)
-    result = engine.analyze()
-
-    if "error" in result:
-        print(f"CRITICAL ERROR: {result['error']}")
-        sys.exit(1)
-
-    # --- VERDICT SECTION ---
-    print_header("STRATEGIC VERDICT")
+    print("\n")
+    print_separator('=')
+    print(f" INITIALIZING QUANT ENGINE FOR: {ticker}")
+    print_separator('=')
+    print(" [1/4] Fetching OHLCV Data (yfinance)...")
     
-    print(f"VERDICT:  {result['verdict']}")
-    print_separator()
-    
-    print("TRADE PLAN:")
-    print(f"  Entry Price:  {result['entry']:,.0f}")
-    print(f"  Stop Loss:    {result['stop_loss']:,.0f}")
-    print(f"  Target 1 (1R): {result['tp1']:,.0f}")
-    print(f"  Target 2 (2R): {result['tp2']:,.0f}")
-    print(f"  Target 3 (3R): {result['tp3']:,.0f}")
-    
-    print_separator()
-    print("THE LOGIC:")
-    
-    vwap_context = "Healthy" if result['vwap_diff'] > 0 else "Weak"
-    pos_neg = "ABOVE" if result['vwap_diff'] > 0 else "BELOW"
-    
-    explanation = (
-        f"Triggered by {result['strategy']} logic. "
-        f"Price is {vwap_context} ({abs(result['vwap_diff']):.2f}% {pos_neg} VWAP). "
-    )
-    
-    if result['accum_status'] == "Accumulation":
-        explanation += "Smart Money is accumulating (OBV Slope +)."
-    elif result['accum_status'] == "Distribution":
-        explanation += "WARNING: Smart Money distribution detected."
+    try:
+        engine = QuantEngine(ticker)
+        engine.fetch_data()
         
-    print(explanation)
-    
-    print_separator()
-    print("SAFETY SCORE (Backtest Validation):")
-    print(f"  Historical Win Rate: {format_percentage(result['win_rate'])}")
-    print(f"  Prob to hit 1R:      {format_percentage(result['probs']['1R'])}")
-    print(f"  Prob to hit 2R:      {format_percentage(result['probs']['2R'])}")
-    print(f"  Prob to hit 3R:      {format_percentage(result['probs']['3R'])}")
+        print(f" [2/4] Detecting Status: {engine.data_status}")
+        print(" [3/4] Running Grid Search & Backtesting...")
+        print(" [4/4] Analyzing Smart Money Flow (sklearn)...")
+        
+        result = engine.run_optimization_and_generate_signal()
+        
+        # --- UI RENDERING ---
+        
+        print("\n")
+        print_separator('=')
+        print(f" VERDICT: {result['verdict']}")
+        print_separator('=')
+        
+        if "NO TRADE" not in result['verdict'] and "WAIT" not in result['verdict']:
+            print(f" STRATEGY: {result['strategy_name']}")
+            print(f" LOGIC   : Triggered by {result['strategy_name']} logic.")
+            print(f"           Price is {result['vwap_text']}.")
+            if result['patterns']:
+                print(f"           Patterns Detected: {', '.join(result['patterns'])}")
+            print("\n TRADE PLAN (OJK Tick Compliant):")
+            print(f" > ENTRY : {int(result['entry'])}")
+            print(f" > STOP  : {int(result['sl'])} (RISK: {int(result['entry'] - result['sl'])})")
+            print(f" > TP 1  : {int(result['tp1'])} (1R)")
+            print(f" > TP 2  : {int(result['tp2'])} (2R)")
+            print(f" > TP 3  : {int(result['tp3'])} (3R)")
+            
+            print("\n SAFETY SCORE (Historical Probability):")
+            print(f" Win Rate (>1R)      : {result['win_rate']:.1f}%")
+            print(f" Probability hit 1R  : {format_probability(result['probs'][0])}")
+            print(f" Probability hit 2R  : {format_probability(result['probs'][1])}")
+            print(f" Probability hit 3R  : {format_probability(result['probs'][2])}")
+        
+        else:
+            print(" System could not find a setup with >60% Probability.")
+            print(" Recommendation: DO NOT ENTER.")
+        
+        print("\n")
+        print_separator()
+        print(" DATA INTELLIGENCE")
+        print_separator()
+        print(f" Asset Class : {result['data_status']}")
+        print(f" Smart Money : {result['sm_status']}")
+        print(f" Flow Start  : {result['sm_date']}")
+        print_separator('-')
+        print(" KEY LEVELS")
+        print(f" Nearest Sup : {int(result['supports'][0])}")
+        print(f" Nearest Res : {int(result['supports'][1])}")
+        print(f" Golden Fib  : {int(result['supports'][2])}")
+        print_separator('-')
+        print(" INDICATORS (Optimized)")
+        print(f" RSI         : {result['indicators']['RSI']:.2f}")
+        print(f" Stochastic  : {result['indicators']['Stoch_K']:.2f}")
+        print(f" Fast MA     : {result['indicators']['SMA_Fast']:.2f}")
+        print_separator('=')
+        print("\n")
 
-    # --- DATA SECTION ---
-    print_header("QUANTITATIVE DATA")
-    
-    # Asset Status
-    asset_type = "IPO / New Listing (< 6 mo data)" if result['is_ipo'] else "Mature Stock"
-    print(f"Asset Class:  {asset_type}")
-    
-    # Smart Money
-    print(f"Smart Money:  {result['accum_status']} (Slope: {result['obv_slope']:.4f})")
-    print(f"Phase Start:  {result['accum_start']}")
-    
-    print_separator()
-    print("KEY LEVELS & PATTERNS:")
-    print(f"  RSI (14):     {result['rsi']:.2f}")
-    print(f"  VWAP:         {result['indicators']['VWAP']:,.2f}")
-    print(f"  VCP Pattern:  {'DETECTED' if result['vcp_detected'] else 'None'}")
-    print(f"  MA Squeeze:   {'ACTIVE' if result['ma_squeeze'] else 'None'}")
-    
-    print("\nDisclaimer: For Educational Purposes Only. Not Financial Advice.")
-    print("Market Data provided by yfinance. Rules based on IDX/OJK constraints.")
+    except Exception as e:
+        print(f"\n [ERROR CRITICAL]: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
