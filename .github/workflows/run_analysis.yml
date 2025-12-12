@@ -6,7 +6,7 @@ on:
       - "run-analysis"
       - "run-bandar-analysis"
     paths:
-      - '**.py'             
+      - 'main.py'             
       - 'requirements.txt'   
       - '.github/workflows/**' 
   workflow_dispatch:
@@ -31,16 +31,35 @@ jobs:
 
     # Analyze with Custom Flag
     - name: Analyze Stock 1
-      run: python main.py ELSA --period 3y --balance 1000000
+      run: python main.py ELSA
     - name: Analyze Stock 2
-      run: python main.py MBMA --period 3y --balance 1000000
+      run: python main.py MBMA
     - name: Analyze Stock 3
-      run: python main.py PSAB --period 3y --balance 1000000
+      run: python main.py CENT
     - name: Analyze Stock 4
-      run: python main.py AVIA --period 3y --balance 1000000
+      run: python main.py AVIA
     - name: Analyze Stock 5
-      run: python main.py HRUM --period 3y --balance 1000000
-
+      run: python main.py HRUM
+    - name: Analyze Stock 6
+      run: python main.py GPRA
+    - name: Analyze Stock 7
+      run: python main.py BISI
+    - name: Analyze Stock 8
+      run: python main.py MAHA
+    - name: Analyze Stock 9
+      run: python main.py ELIT
+    - name: Analyze Stock 10
+      run: python main.py SGER
+    - name: Analyze Stock 11
+      run: python main.py EKAD
+    - name: Analyze Stock 12
+      run: python main.py MEDC
+    - name: Analyze Stock 13
+      run: python main.py TMAS
+    - name: Analyze Stock 14
+      run: python main.py KLAS
+    - name: Analyze Stock 15
+      run: python main.py DMAS
 
 
 

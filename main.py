@@ -1,259 +1,391 @@
-import os
 import sys
+import time
 import argparse
-from engine import StockAnalyzer, DEFAULT_CONFIG
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import warnings
 
-def clear_screen():
-    if sys.stdout.isatty():
-        os.system('cls' if os.name == 'nt' else 'clear')
+# Suppress warnings
+warnings.filterwarnings("ignore")
 
-def print_header():
-    print("="*65)
-    print("      IHSG ULTIMATE SCANNER (V3.4 - Sniper Edition)      ")
-    print("      Precision Entry + Multi-Timeframe + Smart Money + XGBoost")
-    print("="*65)
-
-def print_report(data, balance):
-    if not data:
-        print("\n[!] Error: Could not fetch data or invalid ticker.")
-        return
-
-    # --- ENHANCED HEADER ---
-    chg = data.get('change_pct', 0)
-    chg_str = f"+{chg:.2f}%" if chg >= 0 else f"{chg:.2f}%"
-    chg_color = "🟢" if chg >= 0 else "🔴"
-    
-    print(f"\nSTOCK: {data['name']} ({data['ticker']})")
-    print(f"PRICE: Rp {data['price']:,.0f} ({chg_color} {chg_str})")
-    if data['is_ipo']: print(f"[!] WARNING: IPO DETECTED ({data['days_listed']} days listed)")
-
-    # 1. LIQUIDITY (New)
-    liq = data['liquidity']
-    symbol = "✅" if liq['status'] == "PASS" else "⚠️ "
-    print(f"\n{symbol} LIQUIDITY CHECK")
-    print(f"   {liq['msg']}")
-
-    # 2. FUNDAMENTALS (Enhanced)
-    fund = data['context'].get('fundamental', {})
-    print(f"\n📊 FUNDAMENTALS")
-    print(f"   Market Cap: Rp {fund.get('market_cap', 0):,.0f}")
-    if fund.get('pe'): print(f"   P/E Ratio:  {fund.get('pe', 0):.2f}x")
-    if fund.get('pbv'): print(f"   PBV Ratio:  {fund.get('pbv', 0):.2f}x")
-    if fund.get('roe'): print(f"   ROE:        {fund.get('roe', 0)*100:.2f}%")
-    if fund.get('warning'): print(f"   ⚠️ {fund['warning']}")
-    if fund.get('z_score'): print(f"   🛡️ Safety:   {fund['z_score']} (Altman Z)")
-
-    # 3. TREND HEALTH (Minervini + Weekly)
-    tt = data['trend_template']
-    ma = data['context'].get('ma_values', {})
-    symbol = "✅" if "UPTREND" in tt['status'] else "⚠️ "
-    print(f"\n{symbol} TREND HEALTH")
-    print(f"   Daily Status:  {tt['status']} (Score: {tt['score']}/{tt.get('max_score', 6)})")
-    
-    wt = data['context'].get('weekly_trend', 'UNKNOWN')
-    wt_sym = "✅" if wt == "UPTREND" else "🔻"
-    print(f"   Weekly Status: {wt_sym} {wt}")
-    
-    print(f"   [EMA50: {ma.get('EMA_50', 0):,.0f}] | [EMA200: {ma.get('EMA_200', 0):,.0f}]")
-    for det in tt['details']: print(f"   - {det}")
-
-    # 4. SMART MONEY (Detailed with ML)
-    sm = data['context']['smart_money']
-    symbol = "✅" if "BULLISH" in sm['status'] else "⚠️ " if "BEARISH" in sm['status'] else "🔹"
-    print(f"\n{symbol} SMART MONEY (Bandarmology Proxy)")
-    print(f"   Status: {sm['status']}")
-    
-    metrics = sm.get('metrics', {})
-    if metrics:
-        bp = metrics.get('buy_pressure', 50)
-        bar_len = 20
-        fill = int(bp / 100 * bar_len)
-        bar = "█" * fill + "░" * (bar_len - fill)
-        print(f"   Pressure:  [{bar}] {bp:.1f}% Buy Vol")
-        
-        g_spikes = metrics.get('green_spikes', 0)
-        r_spikes = metrics.get('red_spikes', 0)
-        print(f"   Big Moves: {g_spikes} Accumulation Days vs {r_spikes} Distribution Days")
-    
-    # --- NEW: BANDAR ML SECTION ---
-    b_ml = data['context'].get('bandar_ml', {})
-    prob = b_ml.get('probability', 0)
-    print(f"   AI Accumulation Score: {prob:.1f}% ({b_ml.get('verdict', 'Unknown')})")
-
-    for s in sm['signals']: print(f"   - {s}")
-    
-    # --- NEW: AI PREDICTION (XGBOOST) ---
-    ml = data['context'].get('ml_prediction', {})
-    print(f"\n🤖 AI / MACHINE LEARNING (XGBoost Strict Mode)")
-    if ml.get('prediction') == "N/A":
-         print(f"   Status: Insufficient Data")
-    else:
-        conf = ml.get('confidence', 0)
-        emoji = "🚀" if "High Conviction" in ml.get('prediction') else "🐻" if "BEARISH" in ml.get('prediction') else "⚖️"
-        print(f"   Forecast:   {emoji} {ml.get('prediction')} ({conf:.1f}% Confidence)")
-        print(f"   Logic:      {ml.get('msg')}")
-
-    # 5. SETUP & STRUCTURE (Replaced Patterns)
-    print(f"\n💎 SETUP & STRUCTURE")
-    
-    # VCP Check
-    vcp = data['context'].get('vcp', {})
-    if vcp.get('detected'):
-         print(f"   [VCP DETECTED] {vcp['msg']}")
-
-    # Wyckoff Check
-    wyc = data['context'].get('wyckoff', {})
-    if wyc.get('detected'):
-         print(f"   [WYCKOFF]      {wyc['msg']}")
-         
-    # Low Cheat Check
-    lc = data['context'].get('low_cheat', {})
-    if lc.get('detected'):
-         print(f"   [LOW CHEAT]    {lc['msg']}")
-         
-    # Inside Bar Check
-    ib = data['context'].get('inside_bar', {})
-    if ib.get('detected'):
-         print(f"   [INSIDE BAR]   {ib['msg']} (High: {ib['high']:.0f}, Low: {ib['low']:.0f})")
-         
-    # Candle Pattern Check
-    cp = data['context'].get('candle', {})
-    if cp.get('pattern') != "None":
-         print(f"   [CANDLE]       {cp['pattern']} ({cp['sentiment']})")
-    
-    # Support & Resistance Levels
-    ctx = data['context']
-    print(f"\n   --- KEY LEVELS ---")
-    print(f"   Resistance: Rp {ctx.get('resistance', 0):,.0f}")
-    print(f"   Support:    Rp {ctx.get('support', 0):,.0f}")
-    if ctx.get('ai_support', 0) > 0:
-        print(f"   AI Support: Rp {ctx.get('ai_support', 0):,.0f} (Projected Floor)")
-    
-    # Dynamic MA - UPDATED
-    best_ma = ctx.get('best_ma', {})
-    if best_ma.get('score', 0) > 3 and best_ma.get('win_rate', 0) > 50:
-        print(f"   Dynamic MA: EMA {best_ma['period']} @ Rp {best_ma['price']:,.0f} (Score: {best_ma['score']:.1f}, Win Rate: {best_ma['win_rate']}%)")
-        
-    # Fib Levels
-    fibs = ctx.get('fib_levels', {})
-    if fibs:
-        print(f"   Golden Fib: Rp {fibs.get('0.618 (Golden)', 0):,.0f}")
-
-    # 6. TRADE PLAN (Enhanced with Sizing & Reasoning)
-    plan = data['plan']
-    print(f"\n🚀 TRADE PLAN (3R)")
-    
-    if "WAIT" in plan['status']:
-        print(f"   Action: {plan['status']}")
-        print(f"   Reason: {plan['reason']}")
-    else:
-        print(f"   ACTION:      BUY ({plan['status']})")
-        print(f"   WHY?:        {plan['reason']}")
-        print(f"   ENTRY:       Rp {plan['entry']:,.0f}")
-        print(f"   STOP LOSS:   Rp {plan['stop_loss']:,.0f}")
-        print(f"   TARGET (3R): Rp {plan['take_profit']:,.0f}")
-        
-        # New: Trailing Stop Logic
-        risk_unit = plan['entry'] - plan['stop_loss']
-        if risk_unit > 0:
-            t1 = plan['entry'] + risk_unit
-            print(f"   MANAGEMENT:  At Rp {t1:,.0f} (1R), move SL to Breakeven.")
-        
-        risk = plan['entry'] - plan['stop_loss']
-        reward = plan['take_profit'] - plan['entry']
-        rrr = reward / risk if risk > 0 else 0
-        print(f"   Ratio:       1:{rrr:.1f}")
-
-        print(f"\n   --- POSITION SIZING (Bal: {balance/1e6:.0f} Jt) ---")
-        if plan.get('lots', 0) > 0:
-            print(f"   🛒 BUY:      {plan['lots']} LOTS")
-            print(f"    Capital:  Rp {plan['lots'] * 100 * plan['entry']:,.0f}")
-            print(f"   🔥 Risk:     Rp {plan['risk_amt']:,.0f} ({DEFAULT_CONFIG['RISK_PER_TRADE_PCT']}%)")
+class StockAnalyzer:
+    def __init__(self, ticker):
+        self.clean_ticker = ticker.upper()
+        if not self.clean_ticker.endswith(".JK") and len(self.clean_ticker) == 4:
+            self.ticker = f"{self.clean_ticker}.JK"
         else:
-            print("   [!] Stop Loss too tight or risk too high.")
+            self.ticker = self.clean_ticker
 
-    # 7. CONCLUSION (Probability-Aware)
-    print(f"\n🏁 FINAL VERDICT")
-    val = data['validation']
-    prob = data['probability']
-    prob_val = prob['value']
-    
-    print(f"   Signal Strength: {val['verdict']} (Score: {val['score']})")
-    print(f"   Win Probability: {prob['verdict']} (~{prob_val}%)")
-    
-    # --- NEW: QUANT METRICS PRINT ---
-    hurst = data['context'].get('hurst', 0.5)
-    rs_score = data['context'].get('rs_score', 50)
-    
-    h_str = "TRENDING" if hurst > 0.55 else "MEAN REVERTING" if hurst < 0.45 else "RANDOM WALK"
-    rs_str = "OUTPERFORMER" if rs_score > 60 else "LAGGARD" if rs_score < 40 else "NEUTRAL"
-    
-    print(f"   Hurst Exponent:  {hurst:.2f} ({h_str})")
-    print(f"   Relative Strength: {rs_score} ({rs_str})")
-    
-    status = data['plan']['status']
-    
-    # --- SMART LOGIC UPDATE ---
-    if "EXECUTE" in status or "EARLY ENTRY" in status:
-        if prob_val >= 60:
-            print(f"\n   👉 RECOMMENDATION: WATCHLIST / BUY")
-            print(f"      Setup confirmed and stats look good.")
-        else:
-            print(f"\n   👉 RECOMMENDATION: RISKY / SPECULATIVE BUY")
-            print(f"      Setup is valid, but statistical win rate is low ({prob_val}%).")
-            print(f"      Reduce position size if you enter.")
+    # --- MATH HELPERS ---
+    def calculate_sma(self, series, length):
+        return series.rolling(window=length).mean()
+
+    def calculate_ema(self, series, length):
+        return series.ewm(span=length, adjust=False).mean()
+
+    def calculate_rsi(self, series, length=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0))
+        loss = (-delta.where(delta < 0, 0))
+        avg_gain = gain.ewm(com=length - 1, min_periods=length).mean()
+        avg_loss = loss.ewm(com=length - 1, min_periods=length).mean()
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
+
+    def calculate_stoch(self, high, low, close, k=14, d=3):
+        lowest_low = low.rolling(window=k).min()
+        highest_high = high.rolling(window=k).max()
+        k_line = 100 * ((close - lowest_low) / (highest_high - lowest_low))
+        d_line = k_line.rolling(window=d).mean()
+        return k_line, d_line
+
+    def calculate_ad(self, high, low, close, volume, open_):
+        high_low_diff = high - low
+        high_low_diff = high_low_diff.replace(0, np.nan)
+        mfm = ((close - low) - (high - close)) / high_low_diff
+        mfm = mfm.fillna(0)
+        return (mfm * volume).cumsum()
+
+    def calculate_obv(self, close, volume):
+        direction = np.where(close > close.shift(1), 1, np.where(close < close.shift(1), -1, 0))
+        obv = (volume * direction).cumsum()
+        return obv.fillna(0)
+
+    # --- DATA FETCHING ---
+    def fetch_data(self, interval="1d", period="2y"):
+        time.sleep(2) # Anti-ban delay
+        try:
+            stock = yf.Ticker(self.ticker)
+            df = stock.history(period=period, interval=interval)
             
-    elif "WAIT" in status:
-        print(f"\n   👉 RECOMMENDATION: WAIT")
-        print(f"      No valid entry yet. {data['plan']['reason']}")
-    else:
-        print(f"\n   👉 RECOMMENDATION: AVOID")
-        print(f"      Trend or Fundamentals broken.")
+            if df.empty:
+                time.sleep(1)
+                stock = yf.Ticker(self.clean_ticker)
+                df = stock.history(period=period, interval=interval)
+            
+            if df.empty: return None
 
-    print("\n" + "="*65)
+            df.reset_index(inplace=True)
+            df.columns = [c.lower() for c in df.columns]
+            df.rename(columns={'date': 'date', 'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close', 'volume': 'volume'}, inplace=True)
+            
+            df['ad'] = self.calculate_ad(df['high'], df['low'], df['close'], df['volume'], df['open'])
+            df['obv'] = self.calculate_obv(df['close'], df['volume'])
+            return df
+        except: return None
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('ticker', nargs='?')
-    
-    parser.add_argument('--balance', type=int, default=10_000_000, help="Account Balance (IDR)")
-    parser.add_argument('--risk', type=float, default=1.0, help="Risk per trade")
-    
-    # UPDATED ARGUMENTS
-    parser.add_argument('--ml_period', default=DEFAULT_CONFIG['ML_PERIOD'], help="Data period for ML (default 5y)")
-    parser.add_argument('--period', default=DEFAULT_CONFIG['BACKTEST_PERIOD'], help="Data period for Backtest (default 2y)")
-    
-    parser.add_argument('--sl', type=float, default=DEFAULT_CONFIG['SL_MULTIPLIER'], help="Stop Loss ATR Multiplier")
-    parser.add_argument('--tp', type=float, default=DEFAULT_CONFIG['TP_MULTIPLIER'], help="Take Profit ATR Multiplier")
-    parser.add_argument('--fib', type=int, default=DEFAULT_CONFIG['FIB_LOOKBACK_DAYS'], help="Fibonacci Lookback Days")
-    parser.add_argument('--cmf', type=int, default=DEFAULT_CONFIG['CMF_PERIOD'], help="CMF Period")
-    parser.add_argument('--mfi', type=int, default=DEFAULT_CONFIG['MFI_PERIOD'], help="MFI Period")
-    parser.add_argument('--min_vol', type=int, default=DEFAULT_CONFIG['MIN_DAILY_VOL'], help="Min Volume Filter")
+    # --- ANALYSIS ---
+    def detect_trend(self, df):
+        if len(df) < 50: return "No Data"
+        if len(df) > 200: fast, slow = 50, 200
+        else: fast, slow = 10, 20 
 
-    args = parser.parse_args()
+        sma_fast = self.calculate_sma(df['close'], fast).iloc[-1]
+        sma_slow = self.calculate_sma(df['close'], slow).iloc[-1]
+        price = df['close'].iloc[-1]
 
-    if not args.ticker:
-        clear_screen()
-        print_header()
-        args.ticker = input("\nEnter Ticker (e.g. BBCA): ").strip()
+        if price > sma_fast > sma_slow: return "UPTREND 🚀"
+        elif price < sma_fast < sma_slow: return "DOWNTREND 🔻"
+        elif sma_fast > sma_slow and price < sma_fast: return "CORRECTION ⚠️"
+        elif sma_fast < sma_slow and price > sma_fast: return "REVERSAL? 🔄"
+        else: return "SIDEWAYS 〰️"
 
-    user_config = {
-        "ACCOUNT_BALANCE": args.balance,
-        "RISK_PER_TRADE_PCT": args.risk,
-        "ML_PERIOD": args.ml_period,        # New ML Period
-        "BACKTEST_PERIOD": args.period,     # Standard Backtest Period
-        "SL_MULTIPLIER": args.sl,
-        "TP_MULTIPLIER": args.tp,
-        "FIB_LOOKBACK_DAYS": args.fib,
-        "CMF_PERIOD": args.cmf,
-        "MFI_PERIOD": args.mfi,
-        "MIN_DAILY_VOL": args.min_vol
-    }
+    def optimize_rsi(self, df):
+        best_rsi = (14, -999) 
+        for p in range(7, 25):
+            d = df.copy()
+            d['rsi'] = self.calculate_rsi(d['close'], length=p)
+            d['sig'] = np.where(d['rsi'] < 30, 1, np.where(d['rsi'] > 70, -1, 0))
+            d['ret'] = d['close'].pct_change().shift(-1) * d['sig']
+            prof = d['ret'].sum()
+            if prof > best_rsi[1]: best_rsi = (p, prof)
+        return best_rsi[0]
 
-    print(f"\nRunning Mega Analysis on {args.ticker.upper()}...")
-    print(f"Config: ML={args.ml_period}, Backtest={args.period}")
-    analyzer = StockAnalyzer(args.ticker, user_config)
-    print_report(analyzer.generate_final_report(), args.balance)
+    def optimize_stoch(self, df):
+        best_stoch = (14, 3, -999) 
+        for k in range(5, 22, 3): 
+            for d in [3, 5]:
+                try:
+                    df_c = df.copy()
+                    k_line, _ = self.calculate_stoch(df_c['high'], df_c['low'], df_c['close'], k, d)
+                    df_c['k'] = k_line
+                    df_c['sig'] = np.where(df_c['k'] < 20, 1, np.where(df_c['k'] > 80, -1, 0))
+                    df_c['ret'] = df_c['close'].pct_change().shift(-1) * df_c['sig']
+                    prof = df_c['ret'].sum()
+                    if prof > best_stoch[2]: best_stoch = (k, d, prof)
+                except: continue
+        return best_stoch[0], best_stoch[1] 
+
+    def format_volume(self, num):
+        if num >= 1_000_000_000: return f"{num/1_000_000_000:.1f}B"
+        if num >= 1_000_000: return f"{num/1_000_000:.1f}M"
+        if num >= 1_000: return f"{num/1_000:.1f}K"
+        return str(int(num))
+
+    # --- MODE 1: DETAILED HISTORY ---
+    def get_detailed_bandar_flow(self, df):
+        if len(df) < 80: return [] 
+        subset_indices = df.index[-60:] 
+        history = []
+        for idx in subset_indices:
+            loc = df.index.get_loc(idx)
+            
+            # Logic
+            window = df.iloc[loc-19 : loc+1]
+            roll_vol = window['volume'].sum()
+            roll_pv = (window['close'] * window['volume']).sum()
+            vwap = roll_pv / roll_vol if roll_vol > 0 else 0
+            curr_close = df['close'].iloc[loc]
+            diff = ((curr_close - vwap) / vwap) * 100
+            
+            if diff < -2: status = "Accumulating"
+            elif -2 <= diff <= 5: status = "Absorbing"
+            else: status = "Distributing"
+            
+            reg_window = df.iloc[loc-14 : loc+1]
+            x = np.arange(len(reg_window))
+            slope_p = np.polyfit(x, reg_window['close'].values, 1)[0]
+            slope_ad = np.polyfit(x, df['ad'].iloc[loc-14 : loc+1].values, 1)[0]
+            div_sig = "-"
+            if slope_p < 0 and slope_ad > 0: div_sig = "BULL DIV 💎"
+            elif slope_p > 0 and slope_ad < 0: div_sig = "BEAR DIV 💣"
+            
+            # Change % (Day %)
+            day_change_str = "-"
+            if loc > 0:
+                prev_close = df['close'].iloc[loc-1]
+                day_pct = ((curr_close - prev_close) / prev_close) * 100
+                day_change_str = f"{day_pct:+.1f}%"
+
+            # Vol & OBV
+            vol = df['volume'].iloc[loc]
+            open_p = df['open'].iloc[loc]
+            vol_color = "(G)" if curr_close >= open_p else "(R)"
+            vol_str = f"{self.format_volume(vol)} {vol_color}"
+            
+            obv_window = df['obv'].iloc[loc-4 : loc+1]
+            if len(obv_window) == 5:
+                slope_obv = np.polyfit(np.arange(5), obv_window.values, 1)[0]
+                obv_trend = "Rising ↗️" if slope_obv > 0 else "Falling ↘️"
+            else: obv_trend = "-"
+
+            date_str = str(df['date'].iloc[loc]).split(" ")[0]
+            history.append([date_str, vwap, status, div_sig, curr_close, day_change_str, vol_str, obv_trend])
+            
+        return history
+
+    # --- MODE 2: COMPRESSED HISTORY ---
+    def get_compressed_bandar_flow(self, df):
+        if len(df) < 80: return [] 
+        subset_indices = df.index[-60:] 
+        raw_history = []
+        
+        for idx in subset_indices:
+            loc = df.index.get_loc(idx)
+            window = df.iloc[loc-19 : loc+1]
+            roll_vol = window['volume'].sum()
+            roll_pv = (window['close'] * window['volume']).sum()
+            vwap = roll_pv / roll_vol if roll_vol > 0 else 0
+            curr_close = df['close'].iloc[loc]
+            open_p = df['open'].iloc[loc]
+            diff = ((curr_close - vwap) / vwap) * 100
+            
+            if diff < -2: status = "Accumulating"
+            elif -2 <= diff <= 5: status = "Absorbing"
+            else: status = "Distributing"
+            
+            reg_window = df.iloc[loc-14 : loc+1]
+            x = np.arange(len(reg_window))
+            slope_p = np.polyfit(x, reg_window['close'].values, 1)[0]
+            slope_ad = np.polyfit(x, df['ad'].iloc[loc-14 : loc+1].values, 1)[0]
+            div_sig = None
+            if slope_p < 0 and slope_ad > 0: div_sig = "BULL DIV 💎"
+            elif slope_p > 0 and slope_ad < 0: div_sig = "BEAR DIV 💣"
+            
+            date_str = str(df['date'].iloc[loc]).split(" ")[0]
+            date_short = f"{date_str.split('-')[1]}-{date_str.split('-')[2]}"
+            
+            raw_history.append({'date': date_short, 'close': curr_close, 'open': open_p, 'vwap': vwap, 'status': status, 'div': div_sig})
+
+        compressed = []
+        if not raw_history: return []
+
+        curr = raw_history[0]
+        block = {
+            'start_date': curr['date'], 'end_date': curr['date'], 'status': curr['status'],
+            'start_price': curr['open'], 'end_price': curr['close'],
+            'divs': {curr['div']} if curr['div'] else set(), 'count': 1, 'vwap_sum': curr['vwap']
+        }
+
+        for i in range(1, len(raw_history)):
+            row = raw_history[i]
+            if row['status'] == block['status']:
+                block['end_date'] = row['date']
+                block['end_price'] = row['close']
+                block['count'] += 1
+                block['vwap_sum'] += row['vwap']
+                if row['div']: block['divs'].add(row['div'])
+            else:
+                compressed.append(block)
+                block = {
+                    'start_date': row['date'], 'end_date': row['date'], 'status': row['status'],
+                    'start_price': row['open'], 'end_price': row['close'],
+                    'divs': {row['div']} if row['div'] else set(), 'count': 1, 'vwap_sum': row['vwap']
+                }
+        compressed.append(block)
+        return compressed
+
+    def analyze_bandar_vwap(self, df, lookback):
+        if len(df) < lookback: return None
+        rolling_vol = df['volume'].rolling(lookback).sum()
+        rolling_pv = (df['close'] * df['volume']).rolling(lookback).sum()
+        vwap = rolling_pv / rolling_vol
+        avg = vwap.iloc[-1]
+        diff = ((df['close'].iloc[-1] - avg) / avg) * 100
+        
+        if diff < -2: s = "ACCUMULATION 🟢"; d = "Price < Avg (Cheap)"
+        elif -2 <= diff <= 5: s = "HOLDING 🟡"; d = "Price ~ Avg (Base)"
+        else: s = "DISTRIBUTION 🔴"; d = "Price > Avg (Profit)"
+        return avg, diff, s, d
+
+    def analyze_ad_line(self, df):
+        if len(df) < 21: return "Insufficient Data"
+        lookback = 20
+        y_p = df['close'].iloc[-lookback:].values
+        y_a = df['ad'].iloc[-lookback:].values
+        x = np.arange(lookback)
+        sp = np.polyfit(x, y_p, 1)[0]
+        sa = np.polyfit(x, y_a, 1)[0]
+        if sp > 0 and sa > 0: return "Inflow 🟢"
+        elif sp < 0 and sa < 0: return "Outflow 🔴"
+        elif sp < 0 and sa > 0: return "BULL DIV 💎" 
+        elif sp > 0 and sa < 0: return "BEAR DIV 💣"
+        else: return "Neutral"
+
+    def analyze_ma_bounces(self, df):
+        if len(df) < 200: return []
+        c = df['close']
+        ma_candidates = {
+            'EMA 8': self.calculate_ema(c, 8), 'EMA 21': self.calculate_ema(c, 21),
+            'EMA 34': self.calculate_ema(c, 34), 'SMA 50': self.calculate_sma(c, 50),
+            'EMA 90': self.calculate_ema(c, 90), 'SMA 200': self.calculate_sma(c, 200),
+        }
+        results = []
+        for name, ma in ma_candidates.items():
+            if ma.isnull().all(): continue
+            touches, bounces = 0, 0
+            subset = df.iloc[-250:].copy()
+            subset['ma'] = ma.iloc[-250:]
+            for i in range(1, len(subset) - 5):
+                if subset['low'].iloc[i] <= subset['ma'].iloc[i]*1.015 and subset['high'].iloc[i] >= subset['ma'].iloc[i]*0.985:
+                    touches += 1
+                    if subset['close'].iloc[i+5] > subset['close'].iloc[i]: bounces += 1
+            if touches > 2: results.append((name, (bounces/touches)*100, touches, ma.iloc[-1]))
+        results.sort(key=lambda x: (x[1], x[2]), reverse=True)
+        return results[:5]
+
+    def print_row(self, c1, c2, c3, c4, c5, c6):
+        print(f"{c1:<7} | {c2:<16} | {c3:<10} | {c4:<10} | {c5:<20} | {c6}")
+
+    def run(self, compressed_mode=False):
+        print(f"\n[+] Fetching data for {self.ticker}...")
+        df_daily = self.fetch_data("1d", "2y")
+        df_weekly = self.fetch_data("1wk", "5y")
+        df_monthly = self.fetch_data("1mo", "10y")
+        
+        if df_daily is None:
+            print("[-] Error: Data not found.")
+            return
+
+        print("\n" + "="*96)
+        print(f"  🚀 STOCK MASTER: {self.ticker}")
+        print("="*96)
+        
+        # 1. MULTI-TIMEFRAME
+        print(f"{'TF':<7} | {'TREND':<16} | {'OPT. RSI':<10} | {'OPT. STOCH':<10} | {'BANDAR (VWAP)':<20} | {'A/D FLOW'}")
+        print("-" * 96)
+        timeframes = [("DAILY", df_daily, 20), ("WEEKLY", df_weekly, 10), ("MONTHLY", df_monthly, 6)]
+        for tf_name, df, bd_lb in timeframes:
+            if df is None or len(df) < 25:
+                self.print_row(tf_name, "No Data", "-", "-", "-", "-")
+                continue
+            trend = self.detect_trend(df)
+            rsi_p = self.optimize_rsi(df)
+            k_opt, d_opt = self.optimize_stoch(df)
+            ad_status = self.analyze_ad_line(df)
+            res = self.analyze_bandar_vwap(df, bd_lb)
+            bd_str = f"{res[2].split(' ')[0]} @ {res[0]:,.0f}" if res else "-"
+            self.print_row(tf_name, trend, f"RSI: {rsi_p}", f"{k_opt},{d_opt},3", bd_str, ad_status)
+
+        # 2. BANDAR DEEP DIVE
+        print("\n" + "="*40)
+        print(f" 🐋 BANDAR DEEP DIVE (Daily Details)")
+        print("="*40)
+        bd_data = self.analyze_bandar_vwap(df_daily, 20)
+        if bd_data:
+            avg, diff, status, desc = bd_data
+            curr_p = df_daily['close'].iloc[-1]
+            print(f" Current Price    : {curr_p:,.0f}")
+            print(f" Avg Price (20d)  : {avg:,.0f} (Smart Money Cost)")
+            print(f" Gap to Avg       : {diff:+.2f}%")
+            print(f" Phase            : {status}")
+            print(f" Insight          : {desc}")
+        else:
+            print(" [-] Insufficient data.")
+
+        # 3. DYNAMIC SUPPORT
+        print("\n" + "="*40)
+        print(f" 🛡️  DYNAMIC SUPPORT LEVELS")
+        print("="*40)
+        ma_bounces = self.analyze_ma_bounces(df_daily)
+        if ma_bounces:
+            print(f"{'MA TYPE':<10} {'WIN RATE':<10} {'TOUCHES':<8} {'PRICE':<10} {'GAP'}")
+            print("-" * 50)
+            curr_p = df_daily['close'].iloc[-1]
+            for name, prob, touches, val in ma_bounces:
+                dist = ((curr_p - val) / curr_p) * 100
+                near_str = " 🎯" if 0 <= dist <= 3 else ""
+                print(f"{name:<10} {prob:<9.0f}% {touches:<8} {val:<10,.0f} {dist:+.1f}%{near_str}")
+        else:
+            print(" [-] No reliable MA bounces found.")
+
+        # 4. HISTORICAL FLOW (CONDITIONAL)
+        if compressed_mode:
+            print("\n" + "="*110)
+            print(f" 📜 COMPRESSED BANDAR FLOW (60 Days Log - Ascending)")
+            print("="*110)
+            print(f" {'PERIOD':<14} {'DUR':<5} {'PHASE':<14} {'FLOW':<18} {'CHG %':<8} {'AVG VWAP':<10} {'SIG'}")
+            print("-" * 110)
+            history = self.get_compressed_bandar_flow(df_daily)
+            for b in history:
+                # FIX: Use pre-formatted short dates directly
+                period_str = f"{b['start_date']} > {b['end_date']}"
+                dur_str = f"{b['count']}d"
+                flow_str = f"{b['start_price']:.0f} -> {b['end_price']:.0f}"
+                pct_chg = ((b['end_price'] - b['start_price']) / b['start_price']) * 100
+                pct_str = f"{pct_chg:+.1f}%"
+                avg_vwap = b['vwap_sum'] / b['count']
+                sig_str = ", ".join(list(b['divs'])) if b['divs'] else "-"
+                print(f" {period_str:<14} {dur_str:<5} {b['status']:<14} {flow_str:<18} {pct_str:<8} {avg_vwap:<10.0f} {sig_str}")
+        else:
+            print("\n" + "="*118)
+            print(f" 📜 DETAILED BANDAR FLOW (Last 60 Days - Ascending)")
+            print("="*118)
+            print(f" {'DATE':<12} {'PRICE':<8} {'VWAP':<10} {'PHASE':<14} {'DIVERGENCE':<12} {'DAY %':<8} {'VOLUME':<12} {'OBV TREND'}")
+            print("-" * 118)
+            history = self.get_detailed_bandar_flow(df_daily)
+            for date, vwap, status, div, close, day_chg, vol, obv_t in history:
+                print(f" {date:<12} {close:<8.0f} {vwap:<10.0f} {status:<14} {div:<12} {day_chg:<8} {vol:<12} {obv_t}")
+        
+        print("\n")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Stock Analysis Tool")
+    parser.add_argument("ticker", help="Stock Ticker Symbol (e.g., BBRI)")
+    parser.add_argument("-c", "--compressed", action="store_true", help="View compressed history log")
+    
+    args = parser.parse_args()
+    
+    app = StockAnalyzer(args.ticker)
+    app.run(compressed_mode=args.compressed)

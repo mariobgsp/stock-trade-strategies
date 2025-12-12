@@ -1,80 +1,74 @@
-# IHSG Ultimate Scanner (Sniper Edition)
+# 📈 IHSG Stock Validator & Bandarmology Analyzer
 
-A high-precision stock analysis tool designed for the Indonesian Stock Exchange (IDX/IHSG). This program combines classical Technical Analysis (Minervini Trend Template), Smart Money/Bandarmology logic, and advanced Machine Learning (XGBoost) to identify high-probability swing trading setups.
+A powerful CLI (Command Line Interface) tool designed for the Indonesia Stock Exchange (IHSG). It automates technical analysis, optimizes indicators based on backtesting, and provides "Bandarmology" insights using Volume Weighted Average Price (VWAP) and Accumulation/Distribution logic.
 
----
+## 🚀 Features
 
-## Key Features
+* **Multi-Timeframe Analysis:** Automatically scans Daily, Weekly, and Monthly trends.
+* **Auto-Optimization:**
+    * **RSI:** Backtests periods (7-25) to find the most profitable setting for the specific stock over the last 2 years.
+    * **Stochastic:** Backtests various %K and %D combinations to find the best sensitivity.
+* **Bandarmology Proxy:**
+    * Uses **VWAP (Volume Weighted Average Price)** to estimate the "Smart Money" average holding price.
+    * Detects Phases: **Accumulation** (Green), **Absorption** (Yellow), and **Distribution** (Red).
+* **Flow Analysis:**
+    * **A/D Line & OBV:** Detects hidden Divergences (e.g., Price falling but Money Flow rising = Bullish Divergence).
+    * **Volume Spike Detection:** Highlights days with significant volume activity.
+* **Dynamic Support:** Scans 10 different Moving Averages (EMA/SMA) to find which line the stock historically "bounces" off most reliably.
+* **Historical Log:** View the last 60 days of Bandar flow day-by-day or grouped by phase.
 
-### 1. AI & Machine Learning (XGBoost)
-- Price Forecast (Bullish/Bearish directional bias)
-- Bandar Accumulation AI (Detects Smart Money accumulation)
-- AI Support Projection (Regresses a projected "floor" price)
+## 🛠️ Installation
 
-### 2. Smart Money Analysis
-- CMF & MFI Analysis
-- NVI (Net Volume Index)
-- Stealth Accumulation Detection
-- Distribution Detection
+1.  **Install Python:** Ensure you have Python installed (version 3.8 or higher recommended).
+2.  **Install Dependencies:**
+    Run the following command in your terminal/command prompt:
+    pip install yfinance pandas numpy
 
-### 3. Setup & Structure Detection
-- VCP (Volatility Contraction Pattern)
-- Low Cheat (Early entry points)
-- Inside Bar (Coiling price action)
-- TTM Squeeze (Explosive energy buildup)
+## 💻 Usage
 
-### 4. Trend & Fundamentals Filters
-- Minervini Trend Template (Stage 2 Uptrend)
-- Market Regime (\^JKSE health)
-- Fundamentals (Altman Z-Score, Market Cap, Profitability)
+Run the script from your terminal. You can use either the local ticker (e.g., `BBRI`) or the Yahoo Finance format (`BBRI.JK`).
 
-### 5. Risk Management (Sniper Logic)
-- Position Sizing (Calculates lot size based on risk %)
-- R:R Calculation (Projects 3R targets and Stop Losses based on ATR)
+### 1. Default Mode (Detailed History)
+Shows a day-by-day log of the last 60 trading days.
+python main.py BBRI
 
----
+### 2. Compressed Mode (Grouped History)
+Groups consecutive days of the same phase (e.g., "Accumulating") into single rows for a cleaner summary.
+python main.py BBRI -c
+# OR
+python main.py BBRI --compressed
 
-## Installation
+## 📊 Understanding the Output
 
-### Prerequisites
-- Python 3.8 or higher.
+### Trend & Indicators
+| Column | Description |
+| :--- | :--- |
+| **Trend** | Trend status based on SMA structures (Uptrend, Downtrend, Correction, etc). |
+| **Opt. RSI** | The RSI period (e.g., 8) that historically yielded the highest profit for this stock. |
+| **Opt. Stoch** | The Best Stochastic settings found via brute-force backtesting. |
 
-### Install Dependencies
-pip install yfinance pandas numpy requests beautifulsoup4 textblob xgboost scikit-learn
+### Bandarmology (Smart Money)
+| Term | Meaning |
+| :--- | :--- |
+| **VWAP** | Volume Weighted Average Price. Approximates the "Bandar's" average cost. |
+| **Accumulation** | Price is **< 2% below** VWAP. Smart money is likely buying cheaper. |
+| **Absorbing** | Price is **near** VWAP (-2% to +5%). Smart money is maintaining price. |
+| **Distribution** | Price is **> 5% above** VWAP. Smart money is in profit and likely selling. |
 
----
-
-## Usage
-
-### Basic Scan
-python main.py BBCA
-
-### Advanced Configuration
-python main.py BMRI --period 5y --risk 2.0 --balance 50000000
-
-### Available Arguments
-| Flag | Default | Description |
-| :--- | :--- | :--- |
-| ticker | (Required) | The stock symbol (e.g., BBCA, GOTO). |
-| --balance | 100,000,000 | Account balance in IDR. |
-| --risk | 1.0 | Risk per trade in percent. |
-| --period | 2y | Historical data lookback period. |
-| --sl | 3.0 | Stop Loss multiplier (x ATR). |
-| --tp | 9.0 | Take Profit multiplier (x ATR). |
-| --min_vol | 1,000,000,000 | Minimum daily volume (IDR). |
-
----
-
-## Understanding the Report
-
-1. Liquidity Check
-2. Trend Health (Score >= 4 is ideal)
-3. Smart Money (Buying vs. Selling Pressure)
-4. AI/Machine Learning (Forecast, Confidence > 70%, Accumulation Score, AI Support)
-5. Trade Plan (Entry, SL, Target, Lot Size)
-
----
+### Flow Log
+* **DIVERGENCE:**
+    * 💎 **BULL DIV:** Price is dropping, but Accumulation/Distribution (A/D) Line is rising. Strong Buy signal.
+    * 💣 **BEAR DIV:** Price is rising, but A/D Line is dropping. Strong Sell signal.
+* **OBV TREND:** Shows if the 5-day volume trend is rising (supporting the move) or falling.
+* **DAY %:** Price change on that specific date.
+* **VOLUME:** Daily volume. `(G)` = Green Candle, `(R)` = Red Candle.
 
 ## Disclaimer
 
-This software is for educational and research purposes only. Predictions do not guarantee future results. Always do your own research (DYOR).
+This tool is for **educational and research purposes only**.
+* **Bandarmology Proxy:** This tool uses Volume and Price action to *simulate* Bandarmology. It does not have access to real Broker Summary (Broxsum) data (e.g., Code YP, PD, CC).
+* **Optimization:** "Optimal" indicators are based on past performance, which does not guarantee future results.
+* **No Financial Advice:** Do not trade based solely on this tool. Always do your own research.
+
+---
+*Created for IHSG Analysis Automation*

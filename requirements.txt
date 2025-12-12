@@ -1,9 +1,3 @@
 yfinance
 pandas
 numpy
-textblob
-requests
-beautifulsoup4
-lxml
-scikit-learn
-xgboost
