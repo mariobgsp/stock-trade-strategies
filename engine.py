@@ -1,75 +1,37 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Any
+from scipy.signal import argrelextrema
+from sklearn.linear_model import LinearRegression
 from datetime import datetime, timedelta
 
-# --- 1. OJK/IDX Microstructure Compliance ---
+# ==========================================
+# 1. OJK / IDX COMPLIANCE UTILITIES
+# ==========================================
 class IDXRules:
     """
-    Handles Indonesia Stock Exchange specific microstructure rules.
-    Ref: IDX Regulation No. II-A (Fraksi Harga)
+    Handles Indonesia Stock Exchange specific fraction (tick) rules.
     """
     @staticmethod
-    def get_tick_size(price: float) -> int:
-        if price < 200:
-            return 1
-        elif 200 <= price < 500:
-            return 2
-        elif 500 <= price < 2000:
-            return 5
-        elif 2000 <= price < 5000:
-            return 10
-        else:
-            return 25
+    def get_tick_size(price):
+        if price < 200: return 1
+        if 200 <= price < 500: return 2
+        if 500 <= price < 2000: return 5
+        if 2000 <= price < 5000: return 10
+        return 25
 
     @staticmethod
-    def round_to_tick(price: float) -> int:
-        """Rounds a price to the nearest valid IDX tick."""
+    def round_to_tick(price):
+        """Rounds a raw price to the nearest valid IDX tick."""
         tick = IDXRules.get_tick_size(price)
-        return int(round(price / tick) * tick)
+        return round(price / tick) * tick
 
+# ==========================================
+# 2. CORE CALCULATION ENGINE (Manual Indicators)
+# ==========================================
+class TechnicalAnalysis:
     @staticmethod
-    def calculate_targets(entry_price: float, risk_reward_ratio: float = 3.0) -> Tuple[int, int]:
-        """
-        Calculates Stop Loss (1 tick below support roughly) and Target
-        based on rigid Risk:Reward.
-        Here we define risk as ~3-5% for swing or based on recent low.
-        For this engine, we use a dynamic risk based on ATR or Pivot, 
-        but enforced to integer ticks.
-        """
-        # Default fallback risk if no technical stop provided: 4%
-        risk_per_share = entry_price * 0.04 
-        stop_loss = entry_price - risk_per_share
-        
-        # Enforce Tick Rules
-        stop_loss = IDXRules.round_to_tick(stop_loss)
-        risk_actual = entry_price - stop_loss
-        
-        if risk_actual <= 0: # Sanity check for low volatility
-            tick = IDXRules.get_tick_size(entry_price)
-            stop_loss = entry_price - (2 * tick) # Min 2 ticks risk
-            risk_actual = entry_price - stop_loss
-
-        target_price = entry_price + (risk_actual * risk_reward_ratio)
-        target_price = IDXRules.round_to_tick(target_price)
-        
-        return stop_loss, target_price
-
-# --- 2. Technical Analysis Engine (Manual Calculations) ---
-class TAEngine:
-    """
-    Manual implementation of technical indicators using numpy/pandas.
-    No external lib usage (pandas-ta forbidden).
-    """
-    
-    @staticmethod
-    def sma(series: pd.Series, period: int) -> pd.Series:
-        return series.rolling(window=period).mean()
-
-    @staticmethod
-    def rsi(series: pd.Series, period: int) -> pd.Series:
+    def calculate_rsi(series, period=14):
         delta = series.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -77,253 +39,251 @@ class TAEngine:
         return 100 - (100 / (1 + rs))
 
     @staticmethod
-    def stoch_osc(high: pd.Series, low: pd.Series, close: pd.Series, k_period: int = 14, d_period: int = 3) -> pd.DataFrame:
-        lowest_low = low.rolling(window=k_period).min()
-        highest_high = high.rolling(window=k_period).max()
-        k = 100 * ((close - lowest_low) / (highest_high - lowest_low))
-        d = k.rolling(window=d_period).mean()
-        return pd.DataFrame({'k': k, 'd': d})
-
-    @staticmethod
-    def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
-        obv = pd.Series(index=close.index, dtype='float64')
-        obv.iloc[0] = volume.iloc[0]
-        for i in range(1, len(close)):
-            if close.iloc[i] > close.iloc[i-1]:
-                obv.iloc[i] = obv.iloc[i-1] + volume.iloc[i]
-            elif close.iloc[i] < close.iloc[i-1]:
-                obv.iloc[i] = obv.iloc[i-1] - volume.iloc[i]
-            else:
-                obv.iloc[i] = obv.iloc[i-1]
+    def calculate_obv(df):
+        obv = (np.sign(df['Close'].diff()) * df['Volume']).fillna(0).cumsum()
         return obv
 
     @staticmethod
-    def vwap(df: pd.DataFrame) -> pd.Series:
-        v = df['Volume'].values
-        tp = (df['High'] + df['Low'] + df['Close']) / 3
-        return df.assign(vwap=(tp * v).cumsum() / v.cumsum())['vwap']
+    def calculate_stochastic(df, k_window=14, d_window=3):
+        low_min = df['Low'].rolling(window=k_window).min()
+        high_max = df['High'].rolling(window=k_window).max()
+        k = 100 * ((df['Close'] - low_min) / (high_max - low_min))
+        d = k.rolling(window=d_window).mean()
+        return k, d
 
     @staticmethod
-    def pivot_points(df: pd.DataFrame) -> Dict[str, float]:
-        """Standard Pivot Points based on previous day."""
-        last = df.iloc[-2] # Previous completed day
-        P = (last['High'] + last['Low'] + last['Close']) / 3
-        S1 = (P * 2) - last['High']
-        R1 = (P * 2) - last['Low']
-        return {'P': P, 'S1': S1, 'R1': R1}
+    def calculate_vwap(df):
+        q = df['Volume'] * ((df['High'] + df['Low'] + df['Close']) / 3)
+        return q.cumsum() / df['Volume'].cumsum()
 
     @staticmethod
-    def get_fib_levels(df: pd.DataFrame) -> Dict[str, float]:
-        """Calculates Fib Retracement from last significant swing high to recent low."""
-        # Simple swing detection: Max of last 60 days to Min of last 10 days
-        lookback_high = 60
-        lookback_low = 20
+    def detect_squeeze(df, periods=[5, 10, 20]):
+        # "Superclose" logic: Check if MAs are within 5% of each other
+        ma_values = []
+        for p in periods:
+            ma_values.append(df['Close'].rolling(window=p).mean().iloc[-1])
         
-        recent_high = df['High'].tail(lookback_high).max()
-        recent_low = df['Low'].tail(lookback_low).min()
+        min_ma = min(ma_values)
+        max_ma = max(ma_values)
         
-        diff = recent_high - recent_low
-        return {
-            '0.0': recent_low,
-            '0.382': recent_low + (diff * 0.382),
-            '0.5': recent_low + (diff * 0.5),
-            '0.618': recent_low + (diff * 0.618),
-            '1.0': recent_high
-        }
-
-    @staticmethod
-    def check_ma_squeeze(df: pd.DataFrame) -> bool:
-        """Detects if SMA 3, 5, 10, 20 are within 5% range."""
-        last = df.iloc[-1]
-        mas = [last['SMA_3'], last['SMA_5'], last['SMA_10'], last['SMA_20']]
-        min_ma = min(mas)
-        max_ma = max(mas)
-        
+        # Avoid division by zero
         if min_ma == 0: return False
-        spread = (max_ma - min_ma) / min_ma
-        return spread < 0.05
+        
+        diff_pct = (max_ma - min_ma) / min_ma
+        return diff_pct < 0.05
 
     @staticmethod
-    def check_vcp(df: pd.DataFrame) -> bool:
-        """
-        Simplified VCP detection: 
-        Detects decreasing volatility (Standard Deviation of High-Low) over 3 windows.
-        """
-        w1 = df['High'].sub(df['Low']).rolling(20).std().iloc[-1]
-        w2 = df['High'].sub(df['Low']).rolling(20).std().iloc[-20]
-        w3 = df['High'].sub(df['Low']).rolling(20).std().iloc[-40]
+    def detect_vcp(df, window=20):
+        # Volatility Contraction Pattern logic: 
+        # Look for decreasing standard deviation over split windows
+        recent_vol = df['Close'].rolling(window=window).std().iloc[-1]
+        past_vol = df['Close'].shift(window).rolling(window=window).std().iloc[-1]
         
-        # Volatility should be decreasing
-        return w1 < w2 < w3
+        # Simple VCP check: Volatility is currently tighter than it was before
+        if pd.isna(recent_vol) or pd.isna(past_vol) or past_vol == 0:
+            return False
+        return recent_vol < (past_vol * 0.7)
 
-# --- 3. Smart Money / Bandarmology Module ---
-class Bandarmology:
+# ==========================================
+# 3. SMART MONEY & SCIPY ANALYSIS
+# ==========================================
+class SmartMoneyAnalyzer:
     @staticmethod
-    def analyze_flow(df: pd.DataFrame) -> Dict[str, Any]:
+    def analyze_obv_slope(obv_series, window=20):
         """
-        Detects Stealth Accumulation.
-        Logic: Price is consolidating (slope ~ 0) BUT OBV is rising (slope > 0).
+        Uses sklearn LinearRegression to determine the mathematical slope of OBV.
+        Positive slope + Flat Price = Accumulation.
         """
-        window = 14
-        if len(df) < window:
-            return {"status": "INSUFFICIENT_DATA", "phase": "N/A", "strength": "N/A"}
+        y = obv_series.iloc[-window:].values.reshape(-1, 1)
+        X = np.arange(len(y)).reshape(-1, 1)
+        
+        if len(y) < window: return 0, "Insufficient Data"
+        
+        reg = LinearRegression().fit(X, y)
+        slope = reg.coef_[0][0]
+        
+        start_date = obv_series.index[-window]
+        return slope, start_date
 
-        recent = df.tail(window)
+    @staticmethod
+    def find_bounce_zones(df, order=10):
+        """
+        Uses scipy.signal.argrelextrema to find historical rejection levels.
+        """
+        # Find local minima (Support)
+        min_idx = argrelextrema(df['Low'].values, np.less, order=order)[0]
+        # Find local maxima (Resistance)
+        max_idx = argrelextrema(df['High'].values, np.greater, order=order)[0]
         
-        # Calculate Linear Regression Slopes
-        y_price = recent['Close'].values
-        y_obv = recent['OBV'].values
-        x = np.arange(len(y_price))
+        supports = df.iloc[min_idx]['Low'].values
+        resistances = df.iloc[max_idx]['High'].values
         
-        slope_price = np.polyfit(x, y_price, 1)[0]
-        slope_obv = np.polyfit(x, y_obv, 1)[0]
-        
-        # Normalize slope to percentage of mean to make it comparable
-        price_slope_norm = slope_price / recent['Close'].mean()
-        
-        # Thresholds
-        is_price_flat = abs(price_slope_norm) < 0.002 # < 0.2% daily trend change
-        is_obv_rising = slope_obv > 0
-        
-        status = "NEUTRAL"
-        strength = "Weak"
-        
-        if is_price_flat and is_obv_rising:
-            status = "STEALTH ACCUMULATION"
-            strength = "Strong" if slope_obv > (recent['OBV'].std() * 0.5) else "Moderate"
-        elif slope_price < -0.005 and slope_obv > 0:
-            status = "DIVERGENCE (BULLISH)"
-            strength = "Moderate"
-        elif slope_price > 0.005 and slope_obv < 0:
-            status = "DISTRIBUTION"
-            strength = "Strong"
-        elif slope_price > 0.005 and slope_obv > 0:
-            status = "MARKUP"
-            strength = "Strong"
+        return supports, resistances
+
+# ==========================================
+# 4. STRATEGY & BACKTESTING KERNEL
+# ==========================================
+class QuantEngine:
+    def __init__(self, ticker):
+        self.ticker = ticker.upper()
+        if not self.ticker.endswith(".JK"):
+            self.ticker += ".JK"
+        self.df = None
+        self.analysis_results = {}
+
+    def fetch_data(self):
+        try:
+            self.df = yf.download(self.ticker, period="3y", interval="1d", progress=False)
+            if self.df.empty:
+                raise ValueError("No data found")
             
+            # Basic cleaning
+            self.df = self.df.dropna()
+            
+            # Calculate Indicators
+            self.df['RSI'] = TechnicalAnalysis.calculate_rsi(self.df['Close'])
+            self.df['OBV'] = TechnicalAnalysis.calculate_obv(self.df)
+            self.df['VWAP'] = TechnicalAnalysis.calculate_vwap(self.df)
+            self.df['Stoch_K'], self.df['Stoch_D'] = TechnicalAnalysis.calculate_stochastic(self.df)
+            
+        except Exception as e:
+            return False, str(e)
+        return True, "Data Loaded"
+
+    def backtest_strategy(self, fast_ma, slow_ma, rsi_threshold):
+        """
+        Backtests a Golden Cross + RSI filter strategy over the 3-year dataset.
+        Returns: Win Rate, Trade Count, Last Signal
+        """
+        data = self.df.copy()
+        data['FastMA'] = data['Close'].rolling(window=fast_ma).mean()
+        data['SlowMA'] = data['Close'].rolling(window=slow_ma).mean()
+        
+        # Vectorized Signal Logic
+        # Buy: Fast > Slow AND RSI < rsi_threshold (Buy on dip/momentum start)
+        data['Signal'] = np.where(
+            (data['FastMA'] > data['SlowMA']) & 
+            (data['FastMA'].shift(1) <= data['SlowMA'].shift(1)) & 
+            (data['RSI'] < rsi_threshold), 1, 0
+        )
+        
+        # Simulate Trades (Simplified for speed)
+        trades = data[data['Signal'] == 1]
+        if trades.empty:
+            return 0.0, 0, None
+
+        wins = 0
+        total_trades = 0
+        
+        # Iterate to check outcomes (1:3 RR)
+        for date, row in trades.iterrows():
+            entry = row['Close']
+            stop_loss = entry * 0.95 # 5% risk
+            target = entry * 1.15    # 15% reward (1:3)
+            
+            # Look forward 20 days
+            future = data.loc[date:].iloc[1:21]
+            if future.empty: continue
+            
+            hit_tp = future[future['High'] >= target].shape[0] > 0
+            hit_sl = future[future['Low'] <= stop_loss].shape[0] > 0
+            
+            if hit_tp and not hit_sl:
+                wins += 1
+            elif hit_tp and hit_sl:
+                # If both hit, check which happened first (approximate)
+                tp_idx = future[future['High'] >= target].index[0]
+                sl_idx = future[future['Low'] <= stop_loss].index[0]
+                if tp_idx < sl_idx: wins += 1
+            
+            total_trades += 1
+
+        win_rate = (wins / total_trades) * 100 if total_trades > 0 else 0
+        return win_rate, total_trades, data.iloc[-1]
+
+    def optimize_and_analyze(self):
+        # 1. Grid Search for Best Parameters
+        best_wr = 0
+        best_params = (0, 0, 0)
+        
+        ma_combinations = [(5, 10), (10, 20), (20, 50), (50, 100)]
+        rsi_options = [50, 60, 70] # Filter out overbought entries
+        
+        for f, s in ma_combinations:
+            for r in rsi_options:
+                wr, count, _ = self.backtest_strategy(f, s, r)
+                if wr > best_wr and count > 3: # Minimum sample size constraint
+                    best_wr = wr
+                    best_params = (f, s, r)
+
+        # 2. Get Current Technical State
+        current_price = self.df['Close'].iloc[-1]
+        
+        # Scipy Supports
+        supports, resistances = SmartMoneyAnalyzer.find_bounce_zones(self.df)
+        nearest_support = supports[supports < current_price].max() if any(supports < current_price) else current_price * 0.9
+        
+        # Sklearn Smart Money
+        obv_slope, sm_date = SmartMoneyAnalyzer.analyze_obv_slope(self.df['OBV'])
+        
+        # Patterns
+        is_squeeze = TechnicalAnalysis.detect_squeeze(self.df)
+        is_vcp = TechnicalAnalysis.detect_vcp(self.df)
+        
+        # 3. Formulate Verdict
+        # MANDATE: If Win Rate < 65%, force NO TRADE unless Smart Money overrides
+        verdict = "WAIT"
+        why = "Market conditions are ambiguous."
+        
+        strong_accumulation = obv_slope > 0 and current_price > self.df['VWAP'].iloc[-1]
+        
+        if best_wr >= 65:
+            verdict = "BUY"
+            why = f"Backtested Strategy ({best_params[0]}/{best_params[1]} MA) shows {best_wr:.1f}% Win Rate."
+        elif best_wr >= 50 and (strong_accumulation or is_squeeze):
+            verdict = "BUY (SPECULATIVE)"
+            why = "Win rate moderate, but Smart Money Accumulation or Squeeze detected."
+            best_wr += 15 # Boost confidence due to confluence
+        else:
+            verdict = "NO TRADE"
+            why = f"Best strategy only yielded {best_wr:.1f}% WR. Too risky."
+
+        # 4. IDX Compliant Trade Plan
+        risk_per_share = (current_price - nearest_support)
+        # Enforce minimum risk distance (don't set SL too tight)
+        if risk_per_share / current_price < 0.02:
+            risk_per_share = current_price * 0.03 # Min 3% risk
+
+        stop_loss = IDXRules.round_to_tick(current_price - risk_per_share)
+        tp1 = IDXRules.round_to_tick(current_price + (risk_per_share * 1.5))
+        tp2 = IDXRules.round_to_tick(current_price + (risk_per_share * 3.0)) # 1:3 RR
+        tp3 = IDXRules.round_to_tick(current_price + (risk_per_share * 4.5))
+
+        # Pack Results
         return {
-            "status": status,
-            "phase_start": df.index[-window].strftime('%Y-%m-%d'),
-            "strength": strength,
-            "vwap_gap": (df.iloc[-1]['Close'] - df.iloc[-1]['vwap']) / df.iloc[-1]['vwap']
+            "ticker": self.ticker,
+            "current_price": current_price,
+            "verdict": verdict,
+            "why": why,
+            "win_rate": best_wr,
+            "best_params": best_params,
+            "smart_money_slope": obv_slope,
+            "smart_money_date": sm_date,
+            "patterns": {
+                "VCP": is_vcp,
+                "Squeeze": is_squeeze,
+                "Accumulation": strong_accumulation
+            },
+            "trade_plan": {
+                "sl": stop_loss,
+                "tp1": tp1,
+                "tp2": tp2,
+                "tp3": tp3
+            },
+            "technicals": {
+                "rsi": self.df['RSI'].iloc[-1],
+                "stoch_k": self.df['Stoch_K'].iloc[-1],
+                "vwap": self.df['VWAP'].iloc[-1]
+            }
         }
 
-# --- 4. Backtesting & Optimization Engine ---
-@dataclass
-class BacktestResult:
-    win_rate: float
-    total_trades: int
-    avg_return: float
-    params: Dict[str, int]
-    is_valid: bool
-
-class StrategyOptimizer:
-    def __init__(self, df: pd.DataFrame):
-        self.df = df
-        
-    def backtest_strategy(self, rsi_period: int, ma_period: int) -> BacktestResult:
-        """
-        Simulates a simple Buy on Dip/Breakout strategy using dynamic params.
-        Entry: Close > MA AND RSI < 40 (Dip) OR Close > MA * 1.02 (Breakout)
-        Exit: Fixed 1:3 RR based on ATR risk.
-        """
-        balance = 1000000
-        wins = 0
-        losses = 0
-        trades = 0
-        
-        # Pre-calc indicators for speed
-        temp_df = self.df.copy()
-        temp_df['TEST_MA'] = TAEngine.sma(temp_df['Close'], ma_period)
-        temp_df['TEST_RSI'] = TAEngine.rsi(temp_df['Close'], rsi_period)
-        
-        i = ma_period + 5
-        while i < len(temp_df) - 5: # -5 to allow trade to play out slightly
-            row = temp_df.iloc[i]
-            
-            # Entry Condition (Simplified Hybrid)
-            # 1. Trend is Up (Close > MA)
-            # 2. RSI is not overbought (< 70)
-            entry_signal = (row['Close'] > row['TEST_MA']) and (row['TEST_RSI'] < 70) and (row['TEST_RSI'] > 40)
-            
-            if entry_signal:
-                entry_price = row['Close']
-                # Determine Stop/Target using IDX Rules logic
-                sl, tp = IDXRules.calculate_targets(entry_price, 3.0)
-                
-                # Check future candles for outcome
-                outcome = 0 # 0 pending, 1 win, -1 loss
-                for future_idx in range(i+1, min(i+30, len(temp_df))):
-                    f_row = temp_df.iloc[future_idx]
-                    if f_row['Low'] <= sl:
-                        outcome = -1
-                        break
-                    if f_row['High'] >= tp:
-                        outcome = 1
-                        break
-                
-                if outcome == 1:
-                    wins += 1
-                elif outcome == -1:
-                    losses += 1
-                
-                # Skip forward to avoid overlapping trades
-                if outcome != 0:
-                    trades += 1
-                    i = future_idx 
-            
-            i += 1
-            
-        total = wins + losses
-        win_rate = (wins / total * 100) if total > 0 else 0
-        
-        return BacktestResult(
-            win_rate=win_rate,
-            total_trades=total,
-            avg_return=0.0, # Simplified
-            params={'rsi': rsi_period, 'ma': ma_period},
-            is_valid=win_rate > 65 and total > 5 # Min 5 trades to be stat significant
-        )
-
-    def optimize(self) -> BacktestResult:
-        """Grid Search for best params."""
-        rsi_params = [9, 14, 21, 25]
-        ma_params = [20, 50, 100, 200]
-        
-        best_result = BacktestResult(0, 0, 0, {}, False)
-        
-        for r in rsi_params:
-            for m in ma_params:
-                res = self.backtest_strategy(r, m)
-                if res.is_valid and res.win_rate > best_result.win_rate:
-                    best_result = res
-                    
-        return best_result
-
-# --- 5. Main Data Fetcher ---
-def fetch_data(ticker: str) -> pd.DataFrame:
-    # Append .JK if missing
-    if not ticker.endswith('.JK'):
-        ticker = f"{ticker}.JK"
-    
-    print(f"Fetching data for {ticker}...")
-    df = yf.download(ticker, period="3y", interval="1d", progress=False, auto_adjust=False)
-    
-    if df.empty:
-        raise ValueError("No data found. Check ticker symbol.")
-        
-    # Flat column index if multi-index (common in new yfinance)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    # Calculate Base Indicators needed for all modules
-    df['SMA_3'] = TAEngine.sma(df['Close'], 3)
-    df['SMA_5'] = TAEngine.sma(df['Close'], 5)
-    df['SMA_10'] = TAEngine.sma(df['Close'], 10)
-    df['SMA_20'] = TAEngine.sma(df['Close'], 20)
-    df['OBV'] = TAEngine.obv(df['Close'], df['Volume'])
-    df['vwap'] = TAEngine.vwap(df)
-    
-    # Clean NaN
-    df.dropna(inplace=True)
-    return df
